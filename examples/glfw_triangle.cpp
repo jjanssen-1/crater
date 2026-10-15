@@ -198,6 +198,9 @@ int main() {
     // Creates shader modules, pipeline layout, render pass, graphics
     // pipeline, swapchain and synchronization objects; consumes the
     // selected surface format/present mode and the chosen extent.
+    // The pipeline owns the swapchain, which must be destroyed before the
+    // surface below: a nested scope makes 'triangle' destruct first.
+    {
     TrianglePipeline triangle(
         capabilities,
         device,
@@ -281,9 +284,11 @@ int main() {
 
         vkDeviceWaitIdle(device.device);
         frames.destroy(device.device);
-        // GLFW creates the surface but does not destroy it; it belongs to
-        // the instance, so it must go before VulkanInstance destructs.
-        vkDestroySurfaceKHR(vulkanInstance.instance, surface, nullptr);
+    }  // swapchain destroyed here (before the surface)
+
+    // GLFW creates the surface but does not destroy it; it belongs to
+    // the instance, so it must go before VulkanInstance destructs.
+    vkDestroySurfaceKHR(vulkanInstance.instance, surface, nullptr);
     }  // Vulkan objects are destroyed here
 
     glfwDestroyWindow(window);
