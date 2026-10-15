@@ -88,6 +88,7 @@ public:
 
     VkCommandBuffer commandBuffer() const { return commands.commandBuffer; }
     VkFramebuffer framebuffer(uint32_t i) const { return framebuffers[i].framebuffer; }
+    uint32_t imageCount() const { return static_cast<uint32_t>(framebuffers.size()); }
 
 private:
     quadvk::FrameCommands commands;
@@ -357,11 +358,23 @@ int main() {
                             surfaceCaps.surfaceFormat.format);
 
     QuadSync sync(device);
+    const VkExtent2D frameExtent =
+        surfaceCaps.surfaceCapabilities.currentExtent.width != 0xFFFFFFFFu
+            ? surfaceCaps.surfaceCapabilities.currentExtent
+            : VkExtent2D{800, 600};
     FrameResources frames(device, caps, swapchain.swapchain, renderPass.renderPass,
-                          surfaceCaps.surfaceFormat.format,
-                          surfaceCaps.surfaceCapabilities.currentExtent.width != 0xFFFFFFFFu
-                              ? surfaceCaps.surfaceCapabilities.currentExtent
-                              : VkExtent2D{800, 600});
+                          surfaceCaps.surfaceFormat.format, frameExtent);
+    // per-image render-finished semaphores (presentation holds them until
+    // the image is re-acquired; one acquire semaphore in QuadSync)
+    std::vector<VkSemaphore> renderFinished;
+    for (uint32_t i = 0; i < frames.imageCount(); ++i) {
+        VkSemaphoreCreateInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkSemaphore sem = VK_NULL_HANDLE;
+        if (vkCreateSemaphore(device.device, &si, nullptr, &sem) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateSemaphore failed");
+        renderFinished.push_back(sem);
+    }
 
     // descriptor set write: UBO + combined image sampler
     {
@@ -415,6 +428,13 @@ int main() {
         vkResetCommandBuffer(frames.commandBuffer(), 0);
         beginFrameCommandBuffer(frames.commandBuffer());
 
+        // dynamic viewport/scissor (the pipeline declares them dynamic)
+        VkViewport viewport{0.0f, 0.0f, static_cast<float>(renderExtent.width),
+                            static_cast<float>(renderExtent.height), 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, renderExtent};
+        vkCmdSetViewport(frames.commandBuffer(), 0, 1, &viewport);
+        vkCmdSetScissor(frames.commandBuffer(), 0, 1, &scissor);
+
         VkRenderPassBeginInfo rp{};
         rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rp.renderPass = renderPass.renderPass;
@@ -435,25 +455,26 @@ int main() {
         vkCmdEndRenderPass(frames.commandBuffer());
         endFrameCommandBuffer(frames.commandBuffer());
 
-        VkSemaphore signal[] = {sync.imageAvailable};
+        VkSemaphore waitSem[] = {sync.imageAvailable};
+        VkSemaphore signalSem[] = {renderFinished[imageIndex]};
         VkPipelineStageFlags waitStage[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         VkSubmitInfo si{};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.waitSemaphoreCount = 1;
-        si.pWaitSemaphores = signal;
+        si.pWaitSemaphores = waitSem;
         si.pWaitDstStageMask = waitStage;
         si.commandBufferCount = 1;
         VkCommandBuffer cmdBuf = frames.commandBuffer();
         si.pCommandBuffers = &cmdBuf;
         si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores = signal;
+        si.pSignalSemaphores = signalSem;
         if (vkQueueSubmit(graphicsQueue, 1, &si, sync.frameInFlight) != VK_SUCCESS)
             throw std::runtime_error("vkQueueSubmit failed");
 
         VkPresentInfoKHR pi{};
         pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = signal;
+        pi.pWaitSemaphores = signalSem;
         pi.swapchainCount = 1;
         pi.pSwapchains = &swapchain.swapchain;
         pi.pImageIndices = &imageIndex;
@@ -461,6 +482,15 @@ int main() {
     }
 
     vkDeviceWaitIdle(device.device);
+
+    // raw allocations (not covered by generated classes): free them
+    // before the device dies
+    for (auto sem : renderFinished) vkDestroySemaphore(device.device, sem, nullptr);
+    for (auto m : geometryMemories) vkFreeMemory(device.device, m, nullptr);
+    vkFreeMemory(device.device, textureMemory, nullptr);
+    vkFreeMemory(device.device, stagingMemory, nullptr);
+    vkFreeMemory(device.device, uniformMemory, nullptr);
+    vkDestroySurfaceKHR(instance.instance, surface, nullptr);
 
     }  // namespace-scoped RAII objects destroyed here, before GLFW
 
