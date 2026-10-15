@@ -303,3 +303,44 @@ def test_glfw_triangle_example_compiles(registry: Registry, tmp_path):
     assert "class VulkanInstance" in out
     assert "class TrianglePipeline" in out
     assert compile_generated(out, tmp_path)
+
+
+def test_struct_query_sets_stype(registry: Registry):
+    from conftest import generate_from_spec
+
+    out = generate_from_spec(
+        """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceFeatures2:
+    as: features
+""",
+        registry,
+    )
+    assert "features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;" in out
+
+
+def test_device_extension_list_and_partial_features(registry: Registry, tmp_path):
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkEnumerateDeviceExtensionProperties:
+    required: [VK_KHR_swapchain]
+    as: extensions
+
+Dev:
+  VkDevice:
+    name: device
+    enabledExtensionCount: Caps.extensions.size()
+    ppEnabledExtensionNames: Caps.extensions.data()
+    enabledFeatures:
+      samplerAnisotropy: true
+""",
+        registry,
+    )
+    assert "deviceCreateInfo.enabledExtensionCount = caps.extensions.size();" in out
+    assert "deviceCreateInfo_enabledFeatures.samplerAnisotropy = VK_TRUE;" in out
+    assert compile_generated(out, tmp_path)

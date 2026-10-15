@@ -28,13 +28,15 @@ VulkanInstance:
 
 DeviceCapabilities:
   physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkEnumerateDeviceExtensionProperties:
+    required: [VK_KHR_swapchain]
+    as: extensions
   vkGetPhysicalDeviceQueueFamilyProperties:
     require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
     prefer: { queueFlags: VK_QUEUE_COMPUTE_BIT }
     index: true
     as: graphicsQueueFamily
   vkGetPhysicalDeviceFeatures2:
-    required: [features.samplerAnisotropy]
     as: features
 
 VulkanDevice:
@@ -44,7 +46,14 @@ VulkanDevice:
       - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
         queueCount: 1
         pQueuePriorities: [1.0]
-    enabledFeatures: DeviceCapabilities.features.features
+    enabledExtensionCount: DeviceCapabilities.extensions.size()
+    ppEnabledExtensionNames: DeviceCapabilities.extensions.data()
+    # enable exactly the features we use; enabling the whole queried
+    # struct would turn on everything the device supports (e.g.
+    # robustBufferAccess, which costs performance)
+    enabledFeatures:
+      samplerAnisotropy: DeviceCapabilities.features.features.samplerAnisotropy
+      fillModeNonSolid: true
 
 SurfaceCapabilities:
   physicalDevice: {{ VkPhysicalDevice physicalDevice }}
@@ -100,17 +109,13 @@ TrianglePipeline:
         name: main
     inputAssemblyState:
       topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    dynamicState:
+      dynamicStates: [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
+    # viewport/scissor are dynamic: the surface extent can be
+    # 0xFFFFFFFF (unknown) on some platforms, and changes on resize
     viewportState:
-      viewports:
-        - x: 0.0
-          y: 0.0
-          width: SurfaceCapabilities.surfaceCapabilities.currentExtent.width
-          height: SurfaceCapabilities.surfaceCapabilities.currentExtent.height
-      scissors:
-        - offset:
-            x: 0
-            y: 0
-          extent: SurfaceCapabilities.surfaceCapabilities.currentExtent
+      viewportCount: 1
+      scissorCount: 1
     rasterizationState:
       polygonMode: VK_POLYGON_MODE_FILL
       lineWidth: 1.0

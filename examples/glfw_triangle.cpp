@@ -194,6 +194,22 @@ int main() {
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(frames.commandBuffer, &beginInfo);
 
+        // viewport/scissor are dynamic pipeline states (see the yaml);
+        // currentExtent can be 0xFFFFFFFF (unknown) on Wayland, in which
+        // case the framebuffer size is used
+        uint32_t width = capabilities.surfaceCapabilities.currentExtent.width;
+        uint32_t height = capabilities.surfaceCapabilities.currentExtent.height;
+        if (width == 0xFFFFFFFFu || height == 0xFFFFFFFFu) {
+            int fbWidth = 0, fbHeight = 0;
+            glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+            width = static_cast<uint32_t>(fbWidth);
+            height = static_cast<uint32_t>(fbHeight);
+        }
+        VkViewport viewport{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, {width, height}};
+        vkCmdSetViewport(frames.commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(frames.commandBuffer, 0, 1, &scissor);
+
         VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         renderPassInfo.renderPass = triangle.renderPass;

@@ -224,6 +224,10 @@ class CapabilitiesGenerator:
                     lines.append(f"{qd.as_name}Index = 0;")
             return lines
         if qb.shape == "struct":
+            out_struct = self.registry.resolve_struct(qb.output_struct)
+            stype = next((m.value for m in out_struct.members if m.value), None) if out_struct else None
+            if stype:
+                lines.append(f"{qd.as_name}.sType = {stype};")
             out_addr = f"&{qd.as_name}"
             call = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, out=out_addr))})"
             lines.append(self._vk_call(call, cmd, f"{qb.query_command} failed"))
