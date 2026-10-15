@@ -417,12 +417,27 @@ int main() {
         acquireFrameImage(device.device, swapchain.swapchain, sync.imageAvailable,
                           VK_NULL_HANDLE, imageIndex);
 
-        // per-frame MVP: rotate the quad
+        // per-frame UBO: the shader reads THREE mat4s (model, view,
+        // proj - 192 bytes); writing fewer leaves the rest zero and
+        // collapses every vertex to the origin. Column-major.
         float t = static_cast<float>(frame++) * 0.02f;
-        float mvp[12] = {
-            std::cos(t), -std::sin(t), 0.0f, 0.0f,
-            std::sin(t),  std::cos(t), 0.0f, 0.0f,
-            0.0f,         0.0f,         1.0f, 0.0f,
+        const float c = std::cos(t), s = std::sin(t);
+        const float mvp[48] = {
+            // model: rotation around Z
+            c,  s, 0, 0,
+           -s,  c, 0, 0,
+            0,  0, 1, 0,
+            0,  0, 0, 1,
+            // view: identity
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+            // proj: identity (clip space)
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
         };
         void* mapped = nullptr;
         vkMapMemory(device.device, uniformMemory, 0, sizeof(mvp), 0, &mapped);
