@@ -114,6 +114,38 @@ class Command:
     alias: Optional[str] = None
 
 
+def _core_priority(name: str) -> int:
+    """Sort key preferring core/KHR commands over vendor extension variants."""
+    if name.endswith("KHR") or name.endswith("KHR2"):
+        return 0
+    return 1
+
+
+@dataclass
+class QueryBinding:
+    """The inference result: how a capability can be queried.
+
+    Three generic shapes are recognized from command signatures alone:
+
+    * 'array'  - two-call count+array query
+                 (vkGetPhysicalDeviceSurfaceFormatsKHR, ...);
+    * 'struct' - single output struct pointer
+                 (vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
+    * 'present'- array query whose item struct carries a name member
+                 (extensions, layers); doubles as an availability query.
+    """
+
+    query_command: str
+    shape: str
+    item_type: Optional[str] = None
+    output_param: str = ""
+    count_param: Optional[str] = None
+    output_struct: Optional[str] = None
+    inputs: list[Param] = field(default_factory=list)
+    enumerated_type: Optional[str] = None
+    name_member: Optional[str] = None
+
+
 @dataclass
 class CreateInfoBinding:
     """The inference result: how a handle type is created and destroyed."""
@@ -144,6 +176,7 @@ class Registry:
         self.handles: set[str] = set()
         self.enums: dict[str, dict[str, str]] = {}  # enum type -> {name: value}
         self.bitmasks: dict[str, dict[str, str]] = {}
+        self._queries: Optional[dict[str, QueryBinding]] = None
         self._parse()
 
     # ------------------------------------------------------------------ parse
@@ -207,8 +240,8 @@ class Registry:
             )
             lenattr = m.get("len") or ""
             if lenattr and not lenattr.startswith("latexmath"):
-                primary = lenattr.split(",")[0]
-                member.array_len = primary
+                member.array_len = lenattr.split(",")[0]
+                member.is_array = True
             s.members.append(member)
         self._mark_count_members(s)
         return s
@@ -401,3 +434,113 @@ class Registry:
             if p.type in self.handles and p.type != binding.handle and not p.is_pointer
         ]
         return cmd.name, parents
+
+    # -------------------------------------------------------------- inference
+
+    def queries(self) -> dict[str, QueryBinding]:
+        """Infer capability queries, keyed by the queried type.
+
+        A command is a query if its name starts with vkGet/vkEnumerate and it
+        has output parameters but creates nothing. Recognition rules are
+        purely structural:
+
+        * array shape: a non-const pointer to a struct/enum type with a len
+          attribute pointing at a non-const count pointer parameter (the
+          classic two-call idiom);
+        * struct shape: exactly one non-const struct pointer output and no
+          count involved;
+        * present shape: an array query whose item struct carries a name
+          member (extensionName/layerName) - the same enumerate command
+          doubles as an availability query.
+        """
+        if self._queries is not None:
+            return self._queries
+        commands = dict(self.commands)
+        commands.update(self._alias_commands())
+        queries: dict[str, QueryBinding] = {}
+
+        for cmd in commands.values():
+            if cmd.name.startswith(("vkCreate", "vkAllocate")):
+                continue
+            if not cmd.name.startswith(("vkGet", "vkEnumerate")):
+                continue
+            array_param = None
+            count_param = None
+            for p in cmd.params:
+                if (
+                    not p.is_const
+                    and p.is_pointer
+                    and p.array_len
+                    and p.len_reference
+                    and (p.type in self.structs or p.type in self.enums or p.type in self.handles)
+                ):
+                    count = next((x for x in cmd.params if x.name == p.len_reference), None)
+                    if count is not None and count.is_pointer and not count.is_const:
+                        array_param = p
+                        count_param = count
+                        break
+            if array_param is not None and count_param is not None:
+                inputs = [
+                    x
+                    for x in cmd.params
+                    if x is not array_param and x is not count_param and not x.is_const
+                ]
+                prev = queries.get(array_param.type)
+                if prev is not None and _core_priority(cmd.name) > _core_priority(prev.query_command):
+                    continue  # a more core command already provides this query
+                queries[array_param.type] = QueryBinding(
+                    query_command=cmd.name,
+                    shape="array",
+                    item_type=array_param.type,
+                    output_param=array_param.name,
+                    count_param=count_param.name,
+                    inputs=inputs,
+                )
+                continue
+            # struct shape
+            outputs = [p for p in cmd.params if not p.is_const and p.is_pointer and p.type in self.structs]
+            if len(outputs) == 1 and outputs[0].array_len is None:
+                p = outputs[0]
+                others = [x for x in cmd.params if x is not p]
+                # every other parameter must be an input: by value, or an
+                # optional const pointer (allocator-style), never a second output
+                if all((not x.is_pointer and not x.is_const) or x.is_const or x.type in self.handles for x in others):
+                    inputs = [x for x in others if not x.is_const]
+                    queries[p.type] = QueryBinding(
+                        query_command=cmd.name,
+                        shape="struct",
+                        output_param=p.name,
+                        output_struct=p.type,
+                        inputs=inputs,
+                    )
+
+        # present shape: array queries whose item struct carries a name member
+        for item_type, qb in list(queries.items()):
+            if qb.shape != "array":
+                continue
+            s = self.resolve_struct(item_type)
+            if s is None:
+                continue
+            name_member = next(
+                (
+                    m.name
+                    for m in s.members
+                    if m.type == "char" and m.is_array and "name" in m.name.lower()
+                ),
+                None,
+            )
+            if name_member is None:
+                continue
+            queries[item_type] = QueryBinding(
+                query_command=qb.query_command,
+                shape="present",
+                item_type=item_type,
+                output_param=qb.output_param,
+                count_param=qb.count_param,
+                enumerated_type=item_type,
+                name_member=name_member,
+                inputs=qb.inputs,
+            )
+
+        self._queries = queries
+        return queries
