@@ -63,11 +63,56 @@ uint32_t pickGraphicsFamily(VkPhysicalDevice pd) {
     throw std::runtime_error("no graphics queue family");
 }
 
-const uint32_t g_spv[] = {
-    // minimal SPIR-V: a vertex shader writing gl_Position. Valid module
-    // used for pipeline creation tests.
-    0x07230203, 0x00010000, 0x0008000a, 0x00000000, 0x00000000, 0x00020000,
-    0x00000000, 0x00000000,
+// Minimal valid SPIR-V 1.0 modules, hand-encoded: a "void main(){}"
+// entry point per stage. These are structurally valid (validated
+// instruction encodings; the earlier bogus padding killed drivers).
+//
+// Layout: OpCapability Shader / OpMemoryModel Logical GLSL450 /
+// OpEntryPoint <stage> %main "main" / OpSource GLSL 450 / OpName /
+// %void / %fn = OpTypeFunction %void / %main = OpFunction / OpLabel /
+// OpReturn / OpFunctionEnd.
+const uint32_t g_spvVertex[] = {
+    0x07230203, 0x00010000, 0x00080001, 0x00000005, 0x00000000,
+    0x00020011, 0x00000001,                                    // OpCapability Shader
+    0x0003000E, 0x00000000, 0x00000001,                        // OpMemoryModel Logical GLSL450
+    0x0005000F, 0x00000000, 0x00000003, 0x6E69616D, 0x00000000, // OpEntryPoint Vertex %3 "main"
+    0x00030003, 0x00000002, 0x000001C2,                        // OpSource GLSL 450
+    0x00040005, 0x00000003, 0x6E69616D, 0x00000000,            // OpName %3 "main"
+    0x00020013, 0x00000001,                                    // %1 = OpTypeVoid
+    0x00030021, 0x00000002, 0x00000001,                        // %2 = OpTypeFunction %1
+    0x00050036, 0x00000001, 0x00000003, 0x00000000, 0x00000002, // %3 = OpFunction %1 None %2
+    0x000200F8, 0x00000004,                                    // %4 = OpLabel
+    0x000100FD,                                                // OpReturn
+    0x00010100,                                                // OpFunctionEnd
+};
+const uint32_t g_spvFragment[] = {
+    0x07230203, 0x00010000, 0x00080001, 0x00000005, 0x00000000,
+    0x00020011, 0x00000001,
+    0x0003000E, 0x00000000, 0x00000001,
+    0x0005000F, 0x00000004, 0x00000003, 0x6E69616D, 0x00000000, // OpEntryPoint Fragment %3 "main"
+    0x00030003, 0x00000002, 0x000001C2,
+    0x00040005, 0x00000003, 0x6E69616D, 0x00000000,
+    0x00020013, 0x00000001,
+    0x00030021, 0x00000002, 0x00000001,
+    0x00050036, 0x00000001, 0x00000003, 0x00000000, 0x00000002,
+    0x000200F8, 0x00000004,
+    0x000100FD,
+    0x00010100,
+};
+const uint32_t g_spvCompute[] = {
+    0x07230203, 0x00010000, 0x00080001, 0x00000005, 0x00000000,
+    0x00020011, 0x00000001,                                    // OpCapability Shader
+    0x0003000E, 0x00000000, 0x00000001,                        // OpMemoryModel Logical GLSL450
+    0x0005000F, 0x00000005, 0x00000003, 0x6E69616D, 0x00000000, // OpEntryPoint GLCompute %3 "main"
+    0x00060010, 0x00000003, 0x00000011, 0x00000001, 0x00000001, 0x00000001, // OpExecutionMode %3 LocalSize 1 1 1
+    0x00030003, 0x00000002, 0x000001C2,                        // OpSource GLSL 450
+    0x00040005, 0x00000003, 0x6E69616D, 0x00000000,            // OpName %3 "main"
+    0x00020013, 0x00000001,                                    // %1 = OpTypeVoid
+    0x00030021, 0x00000002, 0x00000001,                        // %2 = OpTypeFunction %1
+    0x00050036, 0x00000001, 0x00000003, 0x00000000, 0x00000002, // %3 = OpFunction %1 None %2
+    0x000200F8, 0x00000004,                                    // %4 = OpLabel
+    0x000100FD,                                                // OpReturn
+    0x00010100,                                                // OpFunctionEnd
 };
 
 }  // namespace
@@ -111,12 +156,36 @@ int main(int argc, char** argv) {
         // views need the image; construct with the class that owns it
         RUN_TEST(ViewObjects, {
             MemoryObjects memory(liveDevice.device, VkExtent3D{64, 64, 1});
+            // views require bound memory: allocate and bind (host-visible
+            // type, small allocation, freed with the memory object)
+            VkMemoryRequirements reqs{};
+            vkGetImageMemoryRequirements(liveDevice.device, memory.image, &reqs);
+            VkPhysicalDeviceMemoryProperties props{};
+            vkGetPhysicalDeviceMemoryProperties(physicalDevice, &props);
+            uint32_t typeIndex = 0;
+            for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+                if ((reqs.memoryTypeBits & (1u << i)) &&
+                    (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                    typeIndex = i;
+                    break;
+                }
+            }
+            VkMemoryAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocInfo.allocationSize = reqs.size;
+            allocInfo.memoryTypeIndex = typeIndex;
+            VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+            if (vkAllocateMemory(liveDevice.device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS)
+                throw std::runtime_error("vkAllocateMemory failed");
+            if (vkBindImageMemory(liveDevice.device, memory.image, imageMemory, 0) != VK_SUCCESS)
+                throw std::runtime_error("vkBindImageMemory failed");
             ViewObjects views(liveDevice.device, memory.image);
+            vkFreeMemory(liveDevice.device, imageMemory, nullptr);
         });
 
         // pipeline objects need a shader module
         RUN_TEST(PipelineObjects, PipelineObjects t(
-            liveDevice.device, sizeof(g_spv), g_spv));
+            liveDevice.device, sizeof(g_spvVertex), g_spvVertex));
 
         // render pass + framebuffer + graphics pipeline
         RUN_TEST(RenderObjects, RenderObjects t(liveDevice.device));
@@ -129,14 +198,23 @@ int main(int argc, char** argv) {
                             attachments.data(), 64, 64);
         });
         RUN_TEST(Pipeline, {
-            PipelineObjects pipelineObjects(liveDevice.device, sizeof(g_spv), g_spv);
+            PipelineObjects pipelineObjects(liveDevice.device, sizeof(g_spvVertex), g_spvVertex);
             RenderObjects render(liveDevice.device);
+            // a second module with a Fragment entry point
+            VkShaderModuleCreateInfo fragInfo{};
+            fragInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            fragInfo.codeSize = sizeof(g_spvFragment);
+            fragInfo.pCode = g_spvFragment;
+            VkShaderModule fragModule = VK_NULL_HANDLE;
+            if (vkCreateShaderModule(liveDevice.device, &fragInfo, nullptr, &fragModule) != VK_SUCCESS)
+                throw std::runtime_error("vkCreateShaderModule (fragment) failed");
             Pipeline p(liveDevice.device,
                        pipelineObjects.pipelineLayout, render.renderPass,
-                       pipelineObjects.shaderModule, pipelineObjects.shaderModule);
+                       pipelineObjects.shaderModule, fragModule);
+            vkDestroyShaderModule(liveDevice.device, fragModule, nullptr);
         });
         RUN_TEST(Compute, {
-            PipelineObjects pipelineObjects(liveDevice.device, sizeof(g_spv), g_spv);
+            PipelineObjects pipelineObjects(liveDevice.device, sizeof(g_spvCompute), g_spvCompute);
             Compute c(liveDevice.device, pipelineObjects.pipelineLayout,
                       pipelineObjects.shaderModule);
         });

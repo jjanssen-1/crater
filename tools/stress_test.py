@@ -10,10 +10,8 @@ For each creation command inferred from vk.xml this tool:
 4. records the outcome (ok / generation error / compile error) with the
    error text in a results file.
 
-With --run it also attempts to instantiate the generated class at
-runtime; instantiation failures (unsupported devices, missing
-extensions, ...) are recorded but do not fail the run - your machine
-simply may not support everything.
+Runtime testing lives in tools/live_tests/ instead: hand-written
+specs with sensible parameters, constructed against a real device.
 
 Safety: nothing outside the process is touched. The --run mode only
 creates Vulkan objects with default parameters and destroys them; it
@@ -71,59 +69,6 @@ def compile_header(header: str, include_dir: Path, work: Path, defines: list[str
     return proc.returncode == 0, proc.stderr
 
 
-def run_instantiation(name: str, header: str, include_dir: Path) -> tuple[str, str]:
-    """Attempt to construct the generated class in a child process.
-
-    The child gets its own process so a driver crash cannot take the test
-    run down. Nothing here reads external data or leaves lasting effects:
-    objects are created with null parents and destroyed immediately, and
-    a null-parent failure is expected and recorded, not an error.
-    """
-    cls = f"Test_{name}"
-    with tempfile.TemporaryDirectory() as tmp:
-        work = Path(tmp)
-        (work / "generated.hpp").write_text(header)
-        # every class takes handles/classes we do not have; passing nulls
-        # exercises construction up to the first validation-throwing call
-        (work / "main.cpp").write_text(
-            '#include "generated.hpp"\n'
-            "#include <cstdio>\n"
-            "int main() {\n"
-            "    try {\n"
-            f"        {cls} obj;\n"
-            '        std::printf("constructed\\n");\n'
-            "    } catch (const std::exception& e) {\n"
-            '        std::printf("threw: %s\\n", e.what());\n'
-            "    }\n"
-            "    return 0;\n"
-            "}\n"
-        )
-        proc = subprocess.run(
-            ["g++", "-std=c++17", f"-I{work}", f"-I{include_dir}", str(work / "main.cpp"), "-o", str(work / "test")],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0:
-            stderr = proc.stderr
-            if "no matching function for call" in stderr:
-                return (
-                    "RUN-SKIPPED",
-                    "class needs constructor arguments (real parent handles); "
-                    "runtime instantiation is only meaningful with a live device",
-                )
-            first = next((l for l in stderr.splitlines() if "error:" in l), stderr[:200])
-            return "RUN-LINK-ERROR", first[:300]
-        run = subprocess.run([str(work / "test")], capture_output=True, text=True, timeout=30)
-        out = (run.stdout + run.stderr).strip().replace("\n", " ")[:300]
-        if run.returncode != 0:
-            return f"RUN-CRASH(code {run.returncode})", out
-        if out.startswith("constructed"):
-            return "RUN-OK", out
-        if out.startswith("threw"):
-            return "RUN-THREW(expected for objects needing real parents)", out
-        return "RUN-OK", out
-
-
 def spec_for(name: str, binding) -> str:
     """A minimal spec exercising the given creation binding."""
     lines = [f"Test_{name}:", f"  {name}: {{}}"]
@@ -134,7 +79,6 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--registry", help="path to vk.xml")
     parser.add_argument("--out", default="stress_results.md", help="results file")
-    parser.add_argument("--run", action="store_true", help="also instantiate at runtime")
     parser.add_argument("--only", help="comma-separated object names to test")
     args = parser.parse_args()
 
@@ -193,10 +137,6 @@ def main() -> int:
             entry["detail"] = first[:500]
             print("compile error")
 
-        if args.run and entry["status"] == "COMPILE-OK":
-            entry["status"], entry["detail"] = run_instantiation(
-                name, header, include_dir
-            )
         results.append(entry)
 
     ok = sum(1 for r in results if r["status"] == "COMPILE-OK")

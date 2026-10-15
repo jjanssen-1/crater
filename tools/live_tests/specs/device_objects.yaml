@@ -51,7 +51,9 @@ SamplerObjects:
     addressModeU: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
     addressModeV: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
     addressModeW: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
-    maxLod: 1.0
+    # VK_LOD_CLAMP_NONE instead of a clamped maxLod: clamping in the
+    # sampler costs performance on some GPUs (validation best-practices)
+    maxLod: VK_LOD_CLAMP_NONE
 
 DescriptorObjects:
   VkDescriptorSetLayout:
