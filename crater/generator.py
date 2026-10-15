@@ -20,6 +20,7 @@ from typing import Optional
 from .registry import Member, Registry, Struct
 from .spec import (
     ArrayValue,
+    CallDef,
     CapabilitiesDef,
     ClassDef,
     ObjectDef,
@@ -70,6 +71,162 @@ def _member_var_name(member_name: str) -> str:
         if member_name.startswith(prefix) and member_name[len(prefix) : len(prefix) + 1].isupper():
             return member_name[len(prefix)].lower() + member_name[len(prefix) + 1 :]
     return member_name
+
+
+class CallGenerator:
+    """Generates a class of plain command invocations (call functions).
+
+    Each call becomes a member function that builds the command's info
+    struct from the YAML values, takes the remaining inputs as function
+    parameters, invokes the command and checks its result against the
+    registry's success codes. Output parameters (non-const pointers)
+    become reference parameters.
+    """
+
+    def __init__(self, class_def: ClassDef, registry: Registry, class_lookup: dict[str, ClassDef]):
+        self.cd = class_def
+        self.registry = registry
+        self.class_lookup = class_lookup
+
+    def _info_param(self, cmd):
+        for p in cmd.params:
+            if p.is_const and p.is_pointer and p.type in self.registry.structs:
+                return p
+        return None
+
+    def _member_expr(self, value, member):
+        if isinstance(value, bool):
+            return "VK_TRUE" if value else "VK_FALSE"
+        if isinstance(value, float):
+            return f"{value}f"
+        if isinstance(value, str):
+            if member.is_pointer and member.type == "char":
+                # caller-supplied string literal; keep lifetime in the struct's scope
+                return f"std::string({self._string_literal(value)}).c_str()" if False else value
+            return value
+        return str(value)
+
+    @staticmethod
+    def _string_literal(s: str) -> str:
+        return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+    def generate(self) -> str:
+        lines: list[str] = [f"class {self.cd.name} {{", "public:"]
+        for call in self.cd.calls:
+            lines.append("")
+            lines.extend(self._gen_call(call))
+        lines.append("")
+        lines.append(f"    {self.cd.name}() = default;")
+        lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
+        lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
+        lines.append("};")
+        return "\n".join(lines)
+
+    def _gen_call(self, call: CallDef) -> list[str]:
+        cmd = self.registry.resolve_command(call.command_name)
+        if cmd is None:
+            raise GenerationError(f"unknown command {call.command_name}")
+        info_param = self._info_param(cmd)
+        info_struct = None
+        if info_param is not None:
+            info_struct = self.registry.resolve_struct(info_param.type)
+            if info_struct is None:
+                raise GenerationError(f"unknown struct {info_param.type}")
+
+        info_var = f"{call.as_name}Info"
+        fparams: list[tuple[str, str]] = []  # (type, name) of the generated function
+        seen: set[str] = set()
+        args: list[str] = []
+        locals_: list[str] = []
+        cmd_param_names = {p.name for p in cmd.params} | {_member_var_name(p.name) for p in cmd.params}
+
+        def add_param(ptype: str, pname: str) -> None:
+            if pname not in seen:
+                fparams.append((ptype, pname))
+                seen.add(pname)
+
+        for p in cmd.params:
+            if p is info_param:
+                continue
+            if p.is_pointer and not p.is_const:
+                # output parameter: reference parameter, passed by address
+                add_param(f"{p.type}&", p.name)
+                args.append(f"&{p.name}")
+                continue
+            # value declared in the YAML? (by exact or stripped name)
+            value = call.params.get(p.name)
+            if value is None:
+                value = call.params.get(_member_var_name(p.name))
+            if value is not None:
+                if isinstance(value, Placeholder):
+                    add_param(self._param_type(p, value), value.name)
+                    args.append(value.name)
+                else:
+                    args.append(self._member_expr(value, p))
+                continue
+            # undeclared: function parameter
+            add_param(self._param_type(p, None), p.name)
+            args.append(p.name)
+
+        # build the info struct from the remaining YAML keys
+        if info_param is not None:
+            struct_fields = {
+                k: v for k, v in call.params.items() if k not in cmd_param_names
+            }
+            self._emit_struct_for_call(locals_, info_struct, struct_fields, call, info_var, add_param, seen)
+            args.insert(cmd.params.index(info_param), f"&{info_var}")
+
+        param_list = ", ".join(f"{t} {n}" for t, n in fparams)
+        lines = [f"    static {cmd.return_type if cmd.return_type != 'void' else 'void'} {call.as_name}({param_list}) {{"]
+        lines.extend(f"        {l}" for l in locals_)
+
+        call_expr = f"{call.command_name}({', '.join(args)})"
+        if cmd.return_type == "void":
+            lines.append(f"        {call_expr};")
+        else:
+            success = cmd.successcodes or ["VK_SUCCESS"]
+            checks = " || ".join(f"result__ == {s}" for s in success)
+            lines.append(f"        VkResult result__ = {call_expr};")
+            lines.append(f"        if (!({checks})) {{")
+            lines.append(f'            throw std::runtime_error(std::string("{call.command_name} failed (") + crater::result_name(result__) + ")");')
+            lines.append("        }")
+            if cmd.return_type != "void":
+                lines.append("        return result__;")
+        lines.append("    }")
+        return lines
+
+    def _param_type(self, p, placeholder):
+        if placeholder is not None and placeholder.explicit_type:
+            return placeholder.explicit_type
+        if p.is_pointer:
+            return f"{'const ' if p.is_const else ''}{p.type}*"
+        return p.type
+
+    def _emit_struct_for_call(self, locals_, struct, fields, call, var, add_param, seen) -> None:
+        locals_.append(f"{struct.resolved_name} {var}{{}};")
+        stype = next((m.value for m in struct.members if m.value), None)
+        if stype:
+            locals_.append(f"{var}.sType = {stype};")
+        for key, value in fields.items():
+            member = next(
+                (m for m in struct.members if m.name == key or _member_var_name(m.name) == key),
+                None,
+            )
+            if member is None:
+                raise GenerationError(
+                    f"class '{self.cd.name}', call '{call.command_name}': '{key}' is not a "
+                    f"member of {struct.resolved_name}"
+                )
+            if isinstance(value, Placeholder):
+                add_param(value.explicit_type or member.type, value.name)
+                locals_.append(f"{var}.{member.name} = {value.name};")
+            elif isinstance(value, (list, dict)):
+                raise GenerationError(
+                    f"class '{self.cd.name}', call '{call.command_name}': arrays/nested structs "
+                    f"in call info structs are not supported yet ('{key}')"
+                )
+            else:
+                locals_.append(f"{var}.{member.name} = {self._member_expr(value, member)};")
 
 
 class CapabilitiesGenerator:
@@ -974,6 +1131,8 @@ def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
         out.append("")
         if c.capabilities is not None:
             out.append(CapabilitiesGenerator(c, registry, lookup).generate())
+        elif c.calls:
+            out.append(CallGenerator(c, registry, lookup).generate())
         else:
             gen = ClassGenerator(c, registry, lookup)
             out.append(gen.generate())

@@ -221,18 +221,16 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        vkWaitForFences(device.device, 1, &triangle.inFlight, VK_TRUE, UINT64_MAX);
-        vkResetFences(device.device, 1, &triangle.inFlight);
+        FrameSync::waitForFences(device.device, 1, &triangle.inFlight);
+        FrameSync::resetFences(device.device, 1, &triangle.inFlight);
 
         uint32_t imageIndex = 0;
-        vkAcquireNextImageKHR(device.device, triangle.swapchain, UINT64_MAX,
-                              triangle.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        FrameSync::acquireNextImageKHR(
+            device.device, triangle.swapchain, triangle.imageAvailable,
+            VK_NULL_HANDLE, imageIndex);
 
         vkResetCommandBuffer(frames.commandBuffer, 0);
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(frames.commandBuffer, &beginInfo);
+        FrameSync::beginCommandBuffer(frames.commandBuffer);
 
         // viewport/scissor are dynamic pipeline states (see the yaml)
         uint32_t width = swapchainExtent.width;
@@ -254,8 +252,7 @@ int main() {
         vkCmdBindPipeline(frames.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, triangle.pipeline);
         vkCmdDraw(frames.commandBuffer, 3, 1, 0, 0);
         vkCmdEndRenderPass(frames.commandBuffer);
-        if (vkEndCommandBuffer(frames.commandBuffer) != VK_SUCCESS)
-            throw std::runtime_error("vkEndCommandBuffer failed");
+        FrameSync::endCommandBuffer(frames.commandBuffer);
 
         VkSemaphore waitSemaphores[] = {triangle.imageAvailable};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};

@@ -146,3 +146,16 @@ TrianglePipeline:
   VkFence:
     name: inFlight
     flags: VK_FENCE_CREATE_SIGNALED_BIT
+
+# Plain command invocations: info structs hardcoded in YAML, remaining
+# values are function parameters. Generated as static functions.
+FrameSync:
+  vkWaitForFences:
+    waitAll: true
+    timeout: 1000000000
+  vkResetFences: {}
+  vkAcquireNextImageKHR:
+    timeout: 1000000000
+  vkBeginCommandBuffer:
+    flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+  vkEndCommandBuffer: {}

@@ -151,6 +151,38 @@ automatically adds the capabilities class as a constructor parameter:
 Extensions/layers are *not* auto-enabled: capabilities report and
 select, enabling stays explicit in the CreateInfos.
 
+### Call functions
+
+Commands that are neither object creation nor capability queries can be
+declared as **call functions** - plain invocations with the info struct
+hardcoded in YAML. Everything not hardcoded becomes a function
+parameter; output parameters become references. Result codes are
+checked against the command's success codes from the registry (so e.g.
+`vkAcquireNextImageKHR` correctly accepts `VK_SUBOPTIMAL_KHR`).
+
+```yaml
+FrameSync:
+  vkWaitForFences:
+    waitAll: true
+    timeout: 1000000000
+  vkBeginCommandBuffer:
+    flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+  vkAcquireNextImageKHR:
+    timeout: 1000000000
+```
+
+generates static helpers:
+
+```cpp
+FrameSync::waitForFences(device, 1, &inFlight);          // waitAll/timeout baked in
+FrameSync::beginCommandBuffer(commandBuffer);             // ONE_TIME_SUBMIT baked in
+FrameSync::acquireNextImageKHR(device, swapchain,
+                               semaphore, fence, imageIndex);  // output by reference
+```
+
+This keeps crater an object/structure assistant: rendering logic stays
+in your code, but the boilerplate around it is declared once.
+
 ### Grouping and lifetimes
 
 Objects that "stand together" are grouped in one class; the class

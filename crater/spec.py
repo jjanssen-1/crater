@@ -95,12 +95,28 @@ class ClassDef:
     objects: list[ObjectDef] = field(default_factory=list)
     # capabilities classes only: queries and their selection rules
     capabilities: Optional["CapabilitiesDef"] = None
+    # call functions: plain command invocations with declarable info structs
+    calls: list["CallDef"] = field(default_factory=list)
 
     def object(self, name: str) -> Optional[ObjectDef]:
         for o in self.objects:
             if o.instance_name == name:
                 return o
         return None
+
+
+@dataclass
+class CallDef:
+    """A plain command invocation generated as a member function.
+
+    Values in the YAML fill the command's info struct (and scalar
+    parameters); everything else becomes a function parameter. The result
+    is checked against the command's success codes from the registry.
+    """
+
+    command_name: str
+    params: dict[str, Any] = field(default_factory=dict)
+    as_name: str = ""  # generated function name; default derived
 
 
 @dataclass
@@ -323,6 +339,15 @@ def _validate_predicates(qd: QueryDef, registry: Registry, class_name: str) -> N
                     )
 
 
+def _default_call_name(command_name: str) -> str:
+    stem = command_name[2:] if command_name.startswith("vk") else command_name
+    for prefix in ("GetPhysicalDevice", "EnumerateDevice", "EnumerateInstance", "Get", "Enumerate"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+            break
+    return stem[0].lower() + stem[1:]
+
+
 def _validate_struct_required(qd: QueryDef, registry: Registry, class_name: str) -> None:
     """required paths on struct queries must resolve to VkBool32 members."""
     if not qd.required or qd.binding.shape != "struct":
@@ -462,10 +487,18 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
         cd = ClassDef(name=class_name)
         is_capabilities = any(k in queries or k.startswith("vk") for k in class_body)
         if is_capabilities and not any(k in queries for k in class_body):
-            raise SpecError(
-                f"class '{class_name}': no capability queries declared "
-                f"(keys starting with 'vk' are treated as commands)"
+            has_calls = any(
+                k.startswith("vk")
+                and k in registry.commands
+                and k not in queries
+                and k not in bindings
+                for k in class_body
             )
+            if not has_calls:
+                raise SpecError(
+                    f"class '{class_name}': vk-prefixed entries must be capability "
+                    f"queries or call functions; found neither"
+                )
         declared_inputs: dict[str, Any] = {}
         for command_name, entry in class_body.items():
             if command_name in queries:
@@ -478,6 +511,28 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
                         f"class '{class_name}': duplicate query for '{command_name}'"
                     )
                 cd.capabilities.queries.append(qd)
+            elif (
+                command_name.startswith("vk")
+                and command_name in registry.commands
+                and command_name not in queries
+                and command_name not in bindings
+            ):
+                # a call function: plain command invocation
+                if entry is None:
+                    entry = {}
+                if not isinstance(entry, dict):
+                    raise SpecError(
+                        f"class '{class_name}': call '{command_name}' must be a mapping"
+                    )
+                entry = dict(entry)
+                as_name = entry.pop("as", None) or _default_call_name(command_name)
+                cd.calls.append(
+                    CallDef(
+                        command_name=command_name,
+                        params={k: _parse_value(v) for k, v in entry.items()},
+                        as_name=as_name,
+                    )
+                )
             elif is_capabilities:
                 # input declaration for the queries: a placeholder, a raw
                 # value, or a Class.object reference
@@ -489,7 +544,7 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
             raise SpecError(f"class '{class_name}' contains duplicate object names: {names}")
         if cd.capabilities is not None:
             cd.capabilities.inputs = _capability_inputs(cd.capabilities, class_name, declared_inputs)
-        elif is_capabilities and not cd.capabilities:
+        elif is_capabilities and not cd.capabilities and not cd.calls:
             raise SpecError(f"class '{class_name}': no queries declared")
         classes.append(cd)
     _resolve_refs(classes)
