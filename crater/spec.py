@@ -93,11 +93,51 @@ class ObjectDef:
 class ClassDef:
     name: str
     objects: list[ObjectDef] = field(default_factory=list)
+    # capabilities classes only: queries and their selection rules
+    capabilities: Optional["CapabilitiesDef"] = None
 
     def object(self, name: str) -> Optional[ObjectDef]:
         for o in self.objects:
             if o.instance_name == name:
                 return o
+        return None
+
+
+@dataclass
+class QueryDef:
+    """One capability query inside a capabilities class.
+
+    For array queries 'candidates' is an ordered preference list (first
+    available candidate wins); 'fallback: any' selects the first available
+    item when no candidate matches. 'required'/'optional' are availability
+    lists for name-carrying queries (extensions, layers).
+    """
+
+    queried_type: str
+    binding: Any  # QueryBinding
+    as_name: str  # member name exposing the result
+    candidates: list = field(default_factory=list)
+    fallback_any: bool = False
+    required: list = field(default_factory=list)
+    optional: list = field(default_factory=list)
+
+
+@dataclass
+class CapabilitiesDef:
+    """A class that queries capabilities at runtime and selects values.
+
+    'inputs' holds constructor parameters needed by the queries, in the
+    form (param_name, Placeholder|Ref|type) — e.g. a physical device from
+    another class or a surface handle from the caller.
+    """
+
+    queries: list[QueryDef] = field(default_factory=list)
+    inputs: list[tuple[str, Any]] = field(default_factory=list)
+
+    def query(self, queried_type: str) -> Optional[QueryDef]:
+        for q in self.queries:
+            if q.queried_type == queried_type:
+                return q
         return None
 
 
@@ -149,6 +189,101 @@ def _objects_from_entry(vulkan_name: str, entry: Any, registry: Registry, bindin
     raise SpecError(f"entry for '{vulkan_name}' must be a mapping or list of mappings")
 
 
+def _query_def_from_entry(queried_type: str, entry: Any, queries: dict, class_name: str) -> QueryDef:
+    qb = queries[queried_type]
+    if entry is None:
+        entry = {}
+    if not isinstance(entry, dict):
+        raise SpecError(f"class '{class_name}': query '{queried_type}' must be a mapping")
+    as_name = entry.get("as") or _default_result_name(queried_type)
+    qd = QueryDef(queried_type=queried_type, binding=qb, as_name=as_name)
+    candidates = entry.get("candidates")
+    if candidates is not None:
+        if qb.shape not in ("array", "struct"):
+            raise SpecError(
+                f"class '{class_name}': query '{queried_type}' does not support candidates"
+            )
+        if isinstance(candidates, list) and candidates and isinstance(candidates[0], list):
+            qd.candidates = [_parse_value(c) for c in candidates]  # list of rows (structs)
+        else:
+            qd.candidates = [_parse_value(c) for c in candidates]
+    fallback = entry.get("fallback")
+    if fallback is not None:
+        if fallback != "any":
+            raise SpecError(
+                f"class '{class_name}': unsupported fallback '{fallback}' "
+                f"(only 'any' is supported)"
+            )
+        if not qd.candidates:
+            raise SpecError(
+                f"class '{class_name}': fallback 'any' requires a candidates list"
+            )
+        qd.fallback_any = True
+    for key in ("required", "optional"):
+        if key not in entry:
+            continue
+        if qb.shape != "present":
+            raise SpecError(
+                f"class '{class_name}': '{key}' is only valid for availability "
+                f"queries (extensions/layers), not '{queried_type}'"
+            )
+        items = entry[key]
+        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+            raise SpecError(f"class '{class_name}': '{key}' must be a list of names")
+        setattr(qd, key, items)
+    unknown = set(entry) - {"as", "candidates", "fallback", "required", "optional"}
+    if unknown:
+        raise SpecError(
+            f"class '{class_name}': unknown keys {sorted(unknown)} in query '{queried_type}'"
+        )
+    if qb.shape == "present" and not qd.required and not qd.optional:
+        raise SpecError(
+            f"class '{class_name}': availability query '{queried_type}' needs "
+            f"'required' and/or 'optional'"
+        )
+    return qd
+
+
+def _default_result_name(queried_type: str) -> str:
+    base = queried_type[2:] if queried_type.startswith("Vk") else queried_type
+    for suffix in ("KHR", "EXT", "ARM"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    base = base[0].lower() + base[1:]
+    return base
+
+
+def _capability_inputs(
+    caps: CapabilitiesDef, class_name: str, declared: dict[str, Any]
+) -> list[tuple[str, Any]]:
+    """Union of the inputs required by all queries, in first-seen order.
+
+    An input the spec declares explicitly overrides the registry-derived
+    default (a raw handle constructor parameter). Declarations can be a
+    `{{ [type] name }}` placeholder, a Class.object reference, or any value
+    expression.
+    """
+    inputs: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for qd in caps.queries:
+        for p in qd.binding.inputs:
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            if p.name in declared:
+                inputs.append((p.name, declared[p.name]))
+            else:
+                inputs.append((p.name, p.type))
+    unknown = set(declared) - seen
+    if unknown:
+        raise SpecError(
+            f"class '{class_name}': input(s) {sorted(unknown)} are not required by "
+            f"any query in this class"
+        )
+    return inputs
+
+
 def _quote_placeholders(text: str) -> str:
     """Wrap bare {{ ... }} tokens in double quotes so YAML treats them as scalars."""
 
@@ -161,7 +296,7 @@ def _quote_placeholders(text: str) -> str:
     return _PLACEHOLDER_TOKEN_RE.sub(repl, text)
 
 
-CLASS_REF_RE = re.compile(r"^(?P<class>[A-Z][A-Za-z0-9_]*)\.(?P<object>[A-Za-z_]\w*)$")
+CLASS_REF_RE = re.compile(r"^(?P<class>[A-Z][A-Za-z0-9_]*)\.(?P<path>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)$")
 IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
@@ -184,7 +319,11 @@ def _resolve_value_refs(value: Any, class_name: str, sibling_names: set[str], cl
     if isinstance(value, str):
         m = CLASS_REF_RE.match(value)
         if m and m.group("class") in class_names:
-            return Ref(kind="external", object_name=m.group("object"), class_name=m.group("class"))
+            return Ref(
+                kind="external",
+                object_name=m.group("path"),
+                class_name=m.group("class"),
+            )
         if value in sibling_names:
             return Ref(kind="sibling", object_name=value)
         return value
@@ -207,17 +346,37 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
     if not isinstance(data, dict):
         raise SpecError("top level of the spec must be a mapping of class names")
     bindings = registry.bindings()
+    queries = registry.queries()
 
     classes: list[ClassDef] = []
     for class_name, class_body in data.items():
         if not isinstance(class_body, dict):
             raise SpecError(f"class '{class_name}' must be a mapping of Vulkan objects")
         cd = ClassDef(name=class_name)
+        is_capabilities = any(k in queries for k in class_body)
+        declared_inputs: dict[str, Any] = {}
         for vulkan_name, entry in class_body.items():
-            cd.objects.extend(_objects_from_entry(vulkan_name, entry, registry, bindings))
+            if vulkan_name in queries:
+                cd.capabilities = cd.capabilities or CapabilitiesDef()
+                qd = _query_def_from_entry(vulkan_name, entry, queries, cd.name)
+                if cd.capabilities.query(vulkan_name) is not None:
+                    raise SpecError(
+                        f"class '{class_name}': duplicate query for '{vulkan_name}'"
+                    )
+                cd.capabilities.queries.append(qd)
+            elif is_capabilities:
+                # input declaration for the queries: a placeholder, a raw
+                # value, or a Class.object reference
+                declared_inputs[vulkan_name] = _parse_value(entry)
+            else:
+                cd.objects.extend(_objects_from_entry(vulkan_name, entry, registry, bindings))
         names = [o.instance_name for o in cd.objects]
         if len(names) != len(set(names)):
             raise SpecError(f"class '{class_name}' contains duplicate object names: {names}")
+        if cd.capabilities is not None:
+            cd.capabilities.inputs = _capability_inputs(cd.capabilities, class_name, declared_inputs)
+        elif is_capabilities and not cd.capabilities:
+            raise SpecError(f"class '{class_name}': no queries declared")
         classes.append(cd)
     _resolve_refs(classes)
     return classes

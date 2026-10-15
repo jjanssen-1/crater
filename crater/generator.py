@@ -18,7 +18,16 @@ import re
 from typing import Optional
 
 from .registry import Member, Registry, Struct
-from .spec import ArrayValue, ClassDef, ObjectDef, Placeholder, Ref, StructValue
+from .spec import (
+    ArrayValue,
+    CapabilitiesDef,
+    ClassDef,
+    ObjectDef,
+    Placeholder,
+    QueryDef,
+    Ref,
+    StructValue,
+)
 
 _VERSION_RE = re.compile(r"^\s*(\d+)\s*\.\s*(\d+)\s*(?:\.\s*(\d+))?\s*$")
 
@@ -53,6 +62,246 @@ def _member_var_name(member_name: str) -> str:
         if member_name.startswith(prefix) and member_name[len(prefix) : len(prefix) + 1].isupper():
             return member_name[len(prefix)].lower() + member_name[len(prefix) + 1 :]
     return member_name
+
+
+class CapabilitiesGenerator:
+    """Generates a class that queries capabilities at runtime and selects
+    values per the spec's rules.
+
+    Selection semantics: the first candidate that the queried set contains
+    wins; 'fallback: any' selects the first available item when no candidate
+    matches. Required availability entries throw when missing.
+    """
+
+    def __init__(self, class_def: ClassDef, registry: Registry, class_lookup: dict[str, ClassDef]):
+        self.cd = class_def
+        self.registry = registry
+        self.class_lookup = class_lookup
+        assert class_def.capabilities is not None
+        self.caps = class_def.capabilities
+
+    # --------------------------------------------------------------- inputs
+
+    def _input_param(self, name: str, ptype) -> tuple[str, str]:
+        """(C++ type, C++ name) for a query input parameter."""
+        if isinstance(ptype, Ref) and ptype.kind == "external":
+            return f"const {ptype.class_name}&", _lower_first(ptype.class_name)
+        if isinstance(ptype, Placeholder):
+            if not ptype.explicit_type:
+                raise GenerationError(
+                    f"class '{self.cd.name}': placeholder for input '{name}' needs an "
+                    f"explicit type"
+                )
+            return ptype.explicit_type, ptype.name
+        # raw handle type from the registry
+        return str(ptype), name
+
+    def _input_expr(self, name: str, ptype, query_param_name: str) -> str:
+        """Expression to pass for a query's command parameter."""
+        if isinstance(ptype, Ref) and ptype.kind == "external":
+            other = self.class_lookup[ptype.class_name]
+            target = other.object(ptype.object_name)
+            if target is None:
+                raise GenerationError(
+                    f"class '{self.cd.name}': class '{ptype.class_name}' has no object "
+                    f"'{ptype.object_name}'"
+                )
+            return f"{_lower_first(ptype.class_name)}.{ptype.object_name}"
+        if isinstance(ptype, Placeholder):
+            return ptype.name
+        return query_param_name
+
+    def ctor_params(self) -> list[tuple[str, str]]:
+        params: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for pname, ptype in self.caps.inputs:
+            cpp_type, cpp_name = self._input_param(pname, ptype)
+            if cpp_name in seen:
+                continue
+            params.append((cpp_type, cpp_name))
+            seen.add(cpp_name)
+        return params
+
+    # ------------------------------------------------------------ generation
+
+    def generate(self) -> str:
+        params = self.ctor_params()
+        param_list = ", ".join(f"{t} {n}" for t, n in params)
+        lines: list[str] = [f"class {self.cd.name} {{", "public:"]
+        lines.append(f"    explicit {self.cd.name}({param_list}) {{")
+        body: list[str] = []
+        for qd in self.caps.queries:
+            body.append("")
+            body.append(f"        // {qd.queried_type} -> {qd.as_name}")
+            body.extend(_indent(self._gen_query(qd, params), 8))
+        lines += body
+        lines.append("    }")
+        lines.append("")
+        lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
+        lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
+        lines.append("")
+        lines.append("    // query results")
+        for qd in self.caps.queries:
+            lines.extend(f"    {decl}" for decl in self._result_members(qd))
+        lines.append("};")
+        return "\n".join(lines)
+
+    def _result_members(self, qd: QueryDef) -> list[str]:
+        qb = qd.binding
+        if qb.shape == "array":
+            return [f"{qd.queried_type} {qd.as_name}{{}};"]
+        if qb.shape == "struct":
+            return [f"{qd.queried_type} {qd.as_name}{{}};"]
+        # present: availability flags per declared name
+        return [f"bool {self._flag_name(name)}{{false}};" for name in qd.required + qd.optional]
+
+    @staticmethod
+    def _flag_name(extension_name: str) -> str:
+        parts = extension_name.split("_")
+        if parts[0] in ("VK", "VK_LAYER"):
+            parts = parts[1:]
+        body = parts[0] + "".join(p.capitalize() for p in parts[1:])
+        return "has" + body[0].upper() + body[1:]
+
+    def _gen_query(self, qd: QueryDef, params: list[tuple[str, str]]) -> list[str]:
+        qb = qd.binding
+        cmd = self.registry.resolve_command(qb.query_command)
+        if cmd is None:
+            raise GenerationError(f"unknown command {qb.query_command}")
+        # map command parameter names to expressions
+        param_exprs: dict[str, str] = {}
+        for p in cmd.params:
+            if p.name == qb.output_param or p.name == qb.count_param:
+                continue
+            matching_input = next(
+                (i for i in qb.inputs if i.name == p.name), None
+            )
+            if matching_input is None:
+                param_exprs[p.name] = "nullptr"
+            else:
+                pname, ptype = next(
+                    (pn, pt) for pn, pt in self.caps.inputs if pn == matching_input.name
+                )
+                param_exprs[p.name] = self._input_expr(pname, ptype, matching_input.name)
+
+        lines: list[str] = []
+        if qb.shape == "array":
+            vec = f"{qd.as_name}Options"
+            count_var = f"{qd.as_name}Count"
+            lines.append(f"uint32_t {count_var} = 0;")
+            call1 = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, count=f'&{count_var}', out='nullptr'))})"
+            lines.append(self._vk_call(call1, cmd, f"{qb.query_command} (count) failed"))
+            lines.append(f"std::vector<{qd.queried_type}> {vec}({count_var});")
+            call2 = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, count=f'&{count_var}', out=f'{vec}.data()'))})"
+            lines.append(self._vk_call(call2, cmd, f"{qb.query_command} failed"))
+            lines.append("")
+            if qd.candidates:
+                return lines + self._gen_selection(qd, vec)
+            lines.append(f"if ({vec}.empty()) {{")
+            lines.append(f'    throw std::runtime_error("{qd.queried_type}: no options available");')
+            lines.append("}")
+            lines.append(f"{qd.as_name} = {vec}[0];")
+            return lines
+        if qb.shape == "struct":
+            out_addr = f"&{qd.as_name}"
+            call = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, out=out_addr))})"
+            return [self._vk_call(call, cmd, f"{qb.query_command} failed")]
+        # present
+        return lines + self._gen_present(qd, cmd, param_exprs)
+
+    def _gen_present(self, qd: QueryDef, cmd, param_exprs: dict[str, str]) -> list[str]:
+        qb = qd.binding
+        vec = f"{qd.as_name}Available"
+        count_var = f"{qd.as_name}Count"
+        lines = [
+            f"uint32_t {count_var} = 0;",
+        ]
+        call1 = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, count=f'&{count_var}', out='nullptr'))})"
+        lines.append(self._vk_call(call1, cmd, f"{qb.query_command} (count) failed"))
+        lines.append(f"std::vector<{qb.enumerated_type}> {vec}({count_var});")
+        call2 = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, count=f'&{count_var}', out=f'{vec}.data()'))})"
+        lines.append(self._vk_call(call2, cmd, f"{qb.query_command} failed"))
+        lines.append("")
+        for name in qd.required:
+            flag = self._flag_name(name)
+            lines.append(f"if (std::find_if({vec}.begin(), {vec}.end(), [&](const {qb.enumerated_type}& e) {{ return std::string_view(e.{qb.name_member}) == {self._string_literal(name)}; }}) == {vec}.end()) {{")
+            lines.append(f'    throw std::runtime_error("required {name} is not available");')
+            lines.append("}")
+            lines.append(f"{flag} = true;")
+        for name in qd.optional:
+            flag = self._flag_name(name)
+            lines.append(f"{flag} = std::any_of({vec}.begin(), {vec}.end(), [&](const {qb.enumerated_type}& e) {{ return std::string_view(e.{qb.name_member}) == {self._string_literal(name)}; }});")
+        return lines
+
+    def _gen_selection(self, qd: QueryDef, vec: str) -> list[str]:
+        """First-match selection over candidates."""
+        qb = qd.binding
+        s = self.registry.resolve_struct(qd.queried_type)
+        lines: list[str] = []
+        matched = f"{qd.as_name}Matched"
+        lines.append(f"bool {matched} = false;")
+        if qb.item_type == qd.queried_type and s is not None and len(qd.candidates[0].items if isinstance(qd.candidates[0], ArrayValue) else []) > 1:
+            # struct candidates given as rows of member values
+            for cand in qd.candidates:
+                if not isinstance(cand, ArrayValue):
+                    raise GenerationError(
+                        f"class '{self.cd.name}': {qd.queried_type} candidates must be lists"
+                    )
+                conds = []
+                for i, item in enumerate(cand.items):
+                    if s is None or i >= len(s.members):
+                        break
+                    member = s.members[i + 1] if s.members and s.members[0].type == "VkStructureType" else s.members[i]
+                    conds.append(f"e.{member.name} == {item}")
+                cond = " && ".join(conds)
+                lines.append(f"if (!{matched}) {{")
+                lines.append(f"    for (const {qd.queried_type}& e : {vec}) {{")
+                lines.append(f"        if ({cond}) {{")
+                lines.append(f"            {qd.as_name} = e;")
+                lines.append(f"            {matched} = true;")
+                lines.append("        }")
+                lines.append("    }")
+                lines.append("}")
+        else:
+            for cand in qd.candidates:
+                value = cand.items[0] if isinstance(cand, ArrayValue) else cand
+                lines.append(f"if (!{matched} && std::find({vec}.begin(), {vec}.end(), {value}) != {vec}.end()) {{")
+                lines.append(f"    {qd.as_name} = {value};")
+                lines.append(f"    {matched} = true;")
+                lines.append("}")
+        if qd.fallback_any:
+            lines.append(f"if (!{matched} && !{vec}.empty()) {{")
+            lines.append(f"    {qd.as_name} = {vec}[0];")
+            lines.append("}")
+        else:
+            lines.append(f"if (!{matched}) {{")
+            lines.append(f'    throw std::runtime_error("no acceptable {qd.queried_type} found");')
+            lines.append("}")
+        return lines
+
+    def _args(self, cmd, param_exprs: dict[str, str], count: str | None = None, out: str | None = None) -> list[str]:
+        qb_out = None
+        args: list[str] = []
+        for p in cmd.params:
+            if count is not None and p.type == "uint32_t" and p.is_pointer:
+                args.append(count)
+            elif out is not None and p.is_pointer and not p.is_const and p.type != "uint32_t":
+                args.append(out)
+            elif p.name in param_exprs:
+                args.append(param_exprs[p.name])
+            else:
+                args.append("nullptr")
+        return args
+
+    @staticmethod
+    def _vk_call(call: str, cmd, error: str) -> str:
+        if cmd.return_type == "VkResult":
+            return f"if ({call} != VK_SUCCESS) {{ throw std::runtime_error(\"{error}\"); }}"
+        return f"{call};"
+
+    @staticmethod
+    def _string_literal(s: str) -> str:
+        return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
 class ClassGenerator:
@@ -480,19 +729,30 @@ class ClassGenerator:
                 f"class '{self.cd.name}', object '{o.instance_name}': reference to unknown "
                 f"class '{ref.class_name}'"
             )
-        target = other.object(ref.object_name)
+        path = ref.object_name.split(".")
+        target = other.object(path[0])
         if target is None:
-            raise GenerationError(
-                f"class '{self.cd.name}', object '{o.instance_name}': class '{ref.class_name}' "
-                f"has no object '{ref.object_name}'"
-            )
-        if target.binding.handle != member.type:
+            if other.capabilities is None or not self._is_capability_member(other, path):
+                raise GenerationError(
+                    f"class '{self.cd.name}', object '{o.instance_name}': class "
+                    f"'{ref.class_name}' has no object '{path[0]}'"
+                )
+        elif target.binding.handle != member.type and len(path) == 1:
             raise GenerationError(
                 f"class '{self.cd.name}', object '{o.instance_name}': '{ref.class_name}."
-                f"{ref.object_name}' is a {target.binding.handle} but member "
-                f"'{member.name}' of {member.type if not member.is_pointer else member.type}' expects {member.type}"
+                f"{path[0]}' is a {target.binding.handle} but member "
+                f"'{member.name}' expects {member.type}"
             )
         return f"{_lower_first(ref.class_name)}.{ref.object_name}"
+
+    def _is_capability_member(self, other: ClassDef, path: list[str]) -> bool:
+        """Check that a member path resolves inside a capabilities class."""
+        assert other.capabilities is not None
+        head = path[0]
+        for qd in other.capabilities.queries:
+            if qd.as_name == head:
+                return True
+        return False
 
     # object destruction ---------------------------------------------------
 
@@ -527,21 +787,31 @@ def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
         "// Generated by crater. Do not edit.",
         "#pragma once",
         "",
+        "#include <algorithm>",
         "#include <stdexcept>",
         "#include <string>",
+        "#include <string_view>",
         "#include <vector>",
         "#include <vulkan/vulkan.h>",
     ]
     for c in ordered:
         out.append("")
-        gen = ClassGenerator(c, registry, lookup)
-        out.append(gen.generate())
+        if c.capabilities is not None:
+            out.append(CapabilitiesGenerator(c, registry, lookup).generate())
+        else:
+            gen = ClassGenerator(c, registry, lookup)
+            out.append(gen.generate())
     return "\n".join(out)
 
 
 def _order_classes(classes: list[ClassDef], lookup: dict[str, ClassDef]) -> list[ClassDef]:
     def deps(c: ClassDef) -> set[str]:
         out: set[str] = set()
+        if c.capabilities is not None:
+            for pname, ptype in c.capabilities.inputs:
+                if isinstance(ptype, Ref) and ptype.kind == "external":
+                    out.add(ptype.class_name)
+            return out
         for o in c.objects:
             for ref in ClassGenerator(c, None, lookup)._refs(o):  # type: ignore[arg-type]
                 if ref.kind == "external" and ref.class_name in lookup:
