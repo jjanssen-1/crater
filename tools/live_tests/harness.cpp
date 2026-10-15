@@ -90,6 +90,7 @@ const uint32_t g_spvFragment[] = {
     0x00020011, 0x00000001,
     0x0003000E, 0x00000000, 0x00000001,
     0x0005000F, 0x00000004, 0x00000003, 0x6E69616D, 0x00000000, // OpEntryPoint Fragment %3 "main"
+    0x00040010, 0x00000003, 0x00000100, 0x00000000,             // OpExecutionMode %3 OriginUpperLeft
     0x00030003, 0x00000002, 0x000001C2,
     0x00040005, 0x00000003, 0x6E69616D, 0x00000000,
     0x00020013, 0x00000001,
@@ -114,6 +115,33 @@ const uint32_t g_spvCompute[] = {
     0x000100FD,                                                // OpReturn
     0x00010038,                                                // OpFunctionEnd
 };
+
+// allocate device-local memory and bind it to the image (validation
+// requires views to look at bound memory); caller frees the memory
+VkDeviceMemory bindImageMemory(VkDevice device, VkPhysicalDevice pd, VkImage image) {
+    VkMemoryRequirements reqs{};
+    vkGetImageMemoryRequirements(device, image, &reqs);
+    VkPhysicalDeviceMemoryProperties props{};
+    vkGetPhysicalDeviceMemoryProperties(pd, &props);
+    uint32_t typeIndex = 0;
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        if ((reqs.memoryTypeBits & (1u << i)) &&
+            (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            typeIndex = i;
+            break;
+        }
+    }
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = reqs.size;
+    allocInfo.memoryTypeIndex = typeIndex;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS)
+        throw std::runtime_error("vkAllocateMemory failed");
+    if (vkBindImageMemory(device, image, memory, 0) != VK_SUCCESS)
+        throw std::runtime_error("vkBindImageMemory failed");
+    return memory;
+}
 
 }  // namespace
 
@@ -156,29 +184,8 @@ int main(int argc, char** argv) {
         // views need the image; construct with the class that owns it
         RUN_TEST(ViewObjects, {
             MemoryObjects memory(liveDevice.device, VkExtent3D{64, 64, 1});
-            // views require bound memory: allocate and bind (host-visible
-            // type, small allocation, freed with the memory object)
-            VkMemoryRequirements reqs{};
-            vkGetImageMemoryRequirements(liveDevice.device, memory.image, &reqs);
-            VkPhysicalDeviceMemoryProperties props{};
-            vkGetPhysicalDeviceMemoryProperties(physicalDevice, &props);
-            uint32_t typeIndex = 0;
-            for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
-                if ((reqs.memoryTypeBits & (1u << i)) &&
-                    (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                    typeIndex = i;
-                    break;
-                }
-            }
-            VkMemoryAllocateInfo allocInfo{};
-            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            allocInfo.allocationSize = reqs.size;
-            allocInfo.memoryTypeIndex = typeIndex;
-            VkDeviceMemory imageMemory = VK_NULL_HANDLE;
-            if (vkAllocateMemory(liveDevice.device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS)
-                throw std::runtime_error("vkAllocateMemory failed");
-            if (vkBindImageMemory(liveDevice.device, memory.image, imageMemory, 0) != VK_SUCCESS)
-                throw std::runtime_error("vkBindImageMemory failed");
+            // views require bound memory: allocate, bind, create, free
+            VkDeviceMemory imageMemory = bindImageMemory(liveDevice.device, physicalDevice, memory.image);
             ViewObjects views(liveDevice.device, memory.image);
             vkFreeMemory(liveDevice.device, imageMemory, nullptr);
         });
@@ -192,10 +199,12 @@ int main(int argc, char** argv) {
         RUN_TEST(Framebuffers, {
             RenderObjects render(liveDevice.device);
             MemoryObjects memory(liveDevice.device, VkExtent3D{64, 64, 1});
+            VkDeviceMemory imageMemory = bindImageMemory(liveDevice.device, physicalDevice, memory.image);
             ViewObjects views(liveDevice.device, memory.image);
             std::vector<VkImageView> attachments{views.view};
             Framebuffers fb(liveDevice.device, render.renderPass,
                             attachments.data(), 64, 64);
+            vkFreeMemory(liveDevice.device, imageMemory, nullptr);
         });
         RUN_TEST(Pipeline, {
             PipelineObjects pipelineObjects(liveDevice.device, sizeof(g_spvVertex), g_spvVertex);

@@ -44,6 +44,8 @@ Pipeline:
     vertexInputState: {}
     inputAssemblyState:
       topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    dynamicState:
+      dynamicStates: [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
     viewportState:
       viewportCount: 1
       scissorCount: 1
