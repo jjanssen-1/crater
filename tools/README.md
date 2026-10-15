@@ -63,3 +63,29 @@ presentation, no external reads/writes beyond the results file.
 
 The sandbox has no GPU, so this is meant to run on real hardware -
 please report the results file contents if anything fails.
+
+## pnext_explorer.py
+
+Queries **every extension feature/properties struct your device
+supports** through registry-validated pNext chains - the live runtime
+test for the pNext support, as thorough as your hardware allows:
+
+1. **probe**: a tiny binary dumps the supported device extensions and
+   the API version
+2. **generate**: supported extensions are mapped to their
+   feature/properties structs (via vk.xml's structextends, extension
+   membership and promotion aliases); crater generates a spec whose
+   `vkGetPhysicalDeviceFeatures2`/`Properties2` queries carry all of
+   them in their pNext chains
+3. **run**: the queries execute against your real device and the
+   report lists every `VK_TRUE` feature member, plus validation output
+
+```bash
+python tools/pnext_explorer.py --out pnext_results.md
+```
+
+Safety: strictly read-only capability queries. No extensions are
+enabled, no objects are created beyond the queries, nothing persistent.
+Platform-gated structs are skipped automatically (their headers are
+usually absent); promoted core structs are included per the device's
+API version.
