@@ -19,6 +19,10 @@ from .spec import SpecError, parse_spec
 
 def _load_registry(args: argparse.Namespace) -> Registry:
     return Registry(Path(args.registry)) if args.registry else Registry()
+
+
+def _cmd_generate(args: argparse.Namespace) -> int:
+    registry = _load_registry(args)
     try:
         classes = parse_spec(Path(args.spec).read_text(), registry)
         output = generate(classes, registry)
@@ -35,9 +39,6 @@ def _load_registry(args: argparse.Namespace) -> Registry:
     return 0
 
 
-def _cmd_generate(args: argparse.Namespace) -> int:
-    registry = _load_registry(args)
-    bindings = registry.bindings()
 def _cmd_bindings(args: argparse.Namespace) -> int:
     registry = _load_registry(args)
     bindings = registry.bindings()

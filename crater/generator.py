@@ -49,8 +49,9 @@ def _version_expr(value) -> Optional[str]:
 
 
 def _member_var_name(member_name: str) -> str:
-    if member_name.startswith("p") and member_name[1:2].isupper():
-        return member_name[1:2].lower() + member_name[2:]
+    for prefix in ("pp", "p"):
+        if member_name.startswith(prefix) and member_name[len(prefix) : len(prefix) + 1].isupper():
+            return member_name[len(prefix)].lower() + member_name[len(prefix) + 1 :]
     return member_name
 
 
@@ -232,6 +233,8 @@ class ClassGenerator:
     def _placeholder_type(self, member: Member, ph: Placeholder) -> str:
         if ph.explicit_type:
             return ph.explicit_type
+        if member.is_pointer:
+            return f"{'const ' if member.is_const else ''}{member.type}*"
         return member.type
 
     # ------------------------------------------------------------ generation

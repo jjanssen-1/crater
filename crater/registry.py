@@ -196,6 +196,11 @@ class Registry:
             name_node = p.find("name")
             if type_node is None or name_node is None:
                 continue
+            api = p.get("api")
+            if api and "vulkan" not in api.split(","):
+                continue  # restricted variant (e.g. vulkansc) of an existing param
+            if any(x.name == name_node.text for x in cmd.params):
+                continue  # duplicate variant of the same parameter
             text = "".join(p.itertext())
             param = Param(
                 name=name_node.text,
