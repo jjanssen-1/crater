@@ -83,3 +83,33 @@ The generated header and `glfw_triangle.cpp` were compile-checked with
 `g++ -fsyntax-only` against the official Vulkan headers and GLFW's
 public headers (no GPU available in the sandbox). Linking and rendering
 need a real machine — please report any issues you hit at runtime.
+
+## quad (feature-rich example)
+
+An animated textured quad exercising the broader feature set beyond the
+triangle:
+
+- multi-selection queue families (graphics + transfer from ONE query)
+- pNext feature queries (core + Vulkan 1.1/1.2 features chained)
+- descriptors: pool + set layout + set, updated with UBO + sampler
+- uniform buffer with bound memory, updated per frame (rotation)
+- vertex + index buffers uploaded through a staging buffer
+- texture: image + view + sampler, checkerboard uploaded via barriers
+- graphics AND compute pipelines in one class
+- cross-class references (pipeline layout consumes the descriptor set
+  layout from another class)
+- namespace + per-frame call functions
+
+```bash
+crater generate examples/quad.yaml -o examples/generated/quad.hpp
+glslc examples/shaders/quad.vert -o examples/generated/quad.vert.spv
+glslc examples/shaders/quad.frag -o examples/generated/quad.frag.spv
+glslc examples/shaders/quad.comp -o examples/generated/quad.comp.spv
+g++ -std=c++17 examples/quad.cpp -o quad \
+    -I examples -I $VULKAN_SDK/include -lglfw -lvulkan
+./quad
+```
+
+The imperative parts remain: memory binding (runtime memory type
+selection), uploads (one-time copy commands), descriptor writes,
+recording, and the render loop - everything declarable is in the yaml.

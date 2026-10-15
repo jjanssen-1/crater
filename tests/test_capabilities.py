@@ -435,3 +435,20 @@ Caps:
 """,
             registry,
         )
+
+
+def test_quad_example_generates(registry: Registry, tmp_path):
+    """The feature-rich quad example must keep generating and compiling."""
+    from pathlib import Path
+
+    from conftest import compile_generated, generate_from_spec
+
+    spec = Path(__file__).parent.parent / "examples" / "quad.yaml"
+    out = generate_from_spec(spec.read_text(), registry)
+    # multi-selection: one shared fetch, two selections
+    assert out.count("i < vkGetPhysicalDeviceQueueFamilyProperties_count") == 2
+    # pNext feature query with chained structs as members
+    assert "features_pNext0.sType" in out or "features_pNext" in out
+    # descriptor set + pipelines cross-class reference
+    assert "pSetLayouts = &quadDescriptors.setLayout" in out
+    assert compile_generated(out, tmp_path)
