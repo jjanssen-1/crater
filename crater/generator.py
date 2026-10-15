@@ -211,7 +211,13 @@ class CapabilitiesGenerator:
         if qb.shape == "struct":
             out_addr = f"&{qd.as_name}"
             call = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, out=out_addr))})"
-            return [self._vk_call(call, cmd, f"{qb.query_command} failed")]
+            lines.append(self._vk_call(call, cmd, f"{qb.query_command} failed"))
+            for path in qd.required:
+                lines.append(f"if ({qd.as_name}.{path} != VK_TRUE) {{")
+                error = f"{qb.query_command}: required capability {path} is not supported"
+                lines.append(f'    throw std::runtime_error("{error}");')
+                lines.append("}")
+            return lines
         # present
         return lines + self._gen_present(qd, cmd, param_exprs)
 
@@ -675,8 +681,8 @@ class ClassGenerator:
                     f"class '{self.cd.name}', object '{o.instance_name}': '{key}' is not a "
                     f"member of {struct.resolved_name}"
                 )
-            if member.is_array_len_member:
-                continue  # counts are derived automatically
+            if member.is_array_len_member and not isinstance(value, Placeholder):
+                continue  # counts are derived automatically unless given
             expr = self._emit_member_value(locals_, struct, member, value, o, var)
             if expr is not None:
                 locals_.append(f"{var}.{member.name} = {expr};")

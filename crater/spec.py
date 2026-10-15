@@ -233,14 +233,17 @@ def _query_def_from_entry(command_name: str, entry: Any, queries: dict, registry
     for key in ("required", "optional"):
         if key not in entry:
             continue
-        if qb.shape != "present":
+        if qb.shape not in ("present", "struct"):
             raise SpecError(
                 f"class '{class_name}': '{key}' is only valid for availability "
-                f"queries (extensions/layers), not '{command_name}'"
+                f"queries (extensions/layers) and struct queries, not '{command_name}'"
             )
         items = entry[key]
         if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
             raise SpecError(f"class '{class_name}': '{key}' must be a list of names")
+        if qb.shape == "struct" and key == "required":
+            qd.required = items  # VkBool32 member paths, checked post-query
+            continue
         setattr(qd, key, items)
     for key in ("require", "prefer"):
         if key not in entry:
@@ -284,6 +287,10 @@ def _query_def_from_entry(command_name: str, entry: Any, queries: dict, registry
             f"class '{class_name}': availability query '{command_name}' needs "
             f"'required' and/or 'optional'"
         )
+    if qb.shape == "struct" and qd.optional:
+        raise SpecError(
+            f"class '{class_name}': 'optional' is not supported for struct queries"
+        )
     return qd
 
 
@@ -314,6 +321,32 @@ def _validate_predicates(qd: QueryDef, registry: Registry, class_name: str) -> N
                         f"class '{class_name}': member '{member}' is not a bitmask; "
                         f"only flag names are supported"
                     )
+
+
+def _validate_struct_required(qd: QueryDef, registry: Registry, class_name: str) -> None:
+    """required paths on struct queries must resolve to VkBool32 members."""
+    if not qd.required or qd.binding.shape != "struct":
+        return
+    struct = registry.resolve_struct(qd.binding.output_struct) if qd.binding.output_struct else None
+    if struct is None:
+        raise SpecError(f"class '{class_name}': cannot resolve {qd.binding.output_struct}")
+    for path in qd.required:
+        segments = path.split(".")
+        current = struct
+        target = None
+        for seg in segments:
+            target = current.member(seg)
+            if target is None:
+                raise SpecError(
+                    f"class '{class_name}': '{qd.command_name}' result has no member "
+                    f"'{seg}' (path '{path}')"
+                )
+            current = registry.resolve_struct(target.type) or current
+        if target is None or target.type != "VkBool32":
+            raise SpecError(
+                f"class '{class_name}': required '{path}' is not a VkBool32 "
+                f"member of {qd.binding.output_struct}"
+            )
 
 
 def _default_result_name(qb) -> str:
@@ -439,6 +472,7 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
                 cd.capabilities = cd.capabilities or CapabilitiesDef()
                 qd = _query_def_from_entry(command_name, entry, queries, registry, cd.name)
                 _validate_predicates(qd, registry, cd.name)
+                _validate_struct_required(qd, registry, cd.name)
                 if cd.capabilities.query(command_name) is not None:
                     raise SpecError(
                         f"class '{class_name}': duplicate query for '{command_name}'"

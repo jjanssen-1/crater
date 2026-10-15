@@ -247,3 +247,59 @@ Caps:
 """,
             registry,
         )
+
+
+def test_struct_query_required(registry: Registry, tmp_path):
+    from conftest import generate_from_spec
+
+    out = generate_from_spec(
+        """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceFeatures2:
+    required: [features.samplerAnisotropy]
+    as: features
+""",
+        registry,
+    )
+    assert "if (features.features.samplerAnisotropy != VK_TRUE) {" in out
+    assert compile_generated(out, tmp_path)
+
+
+def test_struct_query_required_invalid_path_rejected(registry: Registry):
+    with pytest.raises(SpecError):
+        parse_spec(
+            """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceFeatures2:
+    required: [notAFeature]
+""",
+            registry,
+        )
+
+
+def test_struct_query_required_non_bool_rejected(registry: Registry):
+    with pytest.raises(SpecError):
+        parse_spec(
+            """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceProperties2:
+    required: [properties.limits.maxImageDimension2D]
+""",
+            registry,
+        )
+
+
+def test_glfw_triangle_example_compiles(registry: Registry, tmp_path):
+    """The shipped GLFW triangle example must keep compiling."""
+    from pathlib import Path
+
+    from conftest import compile_generated, generate_from_spec
+
+    spec = Path(__file__).parent.parent / "examples" / "glfw_triangle.yaml"
+    out = generate_from_spec(spec.read_text(), registry)
+    assert "class VulkanInstance" in out
+    assert "class TrianglePipeline" in out
+    assert compile_generated(out, tmp_path)
