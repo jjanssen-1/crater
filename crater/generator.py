@@ -45,6 +45,14 @@ def _indent(lines: list[str], n: int = 4) -> list[str]:
     return [pad + line if line else line for line in lines]
 
 
+_EXPR_RE = re.compile(r"^[A-Za-z_][\w.]*()$|^.*\(\)$")
+
+
+def _looks_like_expression(value: str) -> bool:
+    """Heuristic: contains a call suffix like .size() / .data() ."""
+    return "()" in value
+
+
 def _version_expr(value) -> Optional[str]:
     if isinstance(value, list) and len(value) in (2, 3) and all(isinstance(v, int) for v in value):
         nums = list(value) + [0] * (3 - len(value))
@@ -153,13 +161,20 @@ class CapabilitiesGenerator:
             if qb.shape == "array" and qd.index:
                 members.append(f"uint32_t {qd.as_name}Index{{}};")
             return members
-        # present: availability flags per declared name
-        return [f"bool {self._flag_name(name)}{{false}};" for name in qd.required + qd.optional]
+        # present: availability flags plus the list of available declared
+        # names, ready to be passed to count/char** members
+        members = [f"std::vector<const char*> {qd.as_name};"]
+        members.extend(
+            f"bool {self._flag_name(name)}{{false}};" for name in qd.required + qd.optional
+        )
+        return members
 
     @staticmethod
     def _flag_name(extension_name: str) -> str:
         parts = extension_name.split("_")
-        if parts[0] in ("VK", "VK_LAYER"):
+        if parts[0] == "VK":
+            parts = parts[1:]
+        if parts and parts[0] == "LAYER":
             parts = parts[1:]
         body = parts[0] + "".join(p.capitalize() for p in parts[1:])
         return "has" + body[0].upper() + body[1:]
@@ -240,9 +255,13 @@ class CapabilitiesGenerator:
             lines.append(f'    throw std::runtime_error("required {name} is not available");')
             lines.append("}")
             lines.append(f"{flag} = true;")
+            lines.append(f"{qd.as_name}.push_back({self._string_literal(name)});")
         for name in qd.optional:
             flag = self._flag_name(name)
             lines.append(f"{flag} = std::any_of({vec}.begin(), {vec}.end(), [&](const {qb.enumerated_type}& e) {{ return std::string_view(e.{qb.name_member}) == {self._string_literal(name)}; }});")
+            lines.append(f"if ({flag}) {{")
+            lines.append(f"    {qd.as_name}.push_back({self._string_literal(name)});")
+            lines.append("}")
         return lines
 
     def _gen_predicate_selection(self, qd: QueryDef, vec: str) -> list[str]:
@@ -355,7 +374,10 @@ class CapabilitiesGenerator:
     @staticmethod
     def _vk_call(call: str, cmd, error: str) -> str:
         if cmd.return_type == "VkResult":
-            return f"if ({call} != VK_SUCCESS) {{ throw std::runtime_error(\"{error}\"); }}"
+            return (
+                f"{{ VkResult result__ = {call}; "
+                f'if (result__ != VK_SUCCESS) {{ throw std::runtime_error(std::string("{error} (") + crater::result_name(result__) + ")"); }} }}'
+            )
         return f"{call};"
 
     @staticmethod
@@ -651,8 +673,12 @@ class ClassGenerator:
         lines = list(locals_)
         call = f"{o.binding.create_command}({', '.join(call_args)})"
         if cmd.return_type == "VkResult":
-            lines.append(f"if ({call} != VK_SUCCESS) {{")
-            lines.append(f'    throw std::runtime_error("{o.binding.create_command} failed");')
+            lines.append(f"{{ VkResult result__ = {call};")
+            lines.append(f"    if (result__ != VK_SUCCESS) {{")
+            lines.append(
+                f'        throw std::runtime_error(std::string("{o.binding.create_command} failed (") + crater::result_name(result__) + ")");'
+            )
+            lines.append("    }")
             lines.append("}")
         else:
             lines.append(f"{call};")
@@ -681,7 +707,7 @@ class ClassGenerator:
                     f"class '{self.cd.name}', object '{o.instance_name}': '{key}' is not a "
                     f"member of {struct.resolved_name}"
                 )
-            if member.is_array_len_member and not isinstance(value, Placeholder):
+            if member.is_array_len_member and not isinstance(value, (Placeholder, Ref)):
                 continue  # counts are derived automatically unless given
             expr = self._emit_member_value(locals_, struct, member, value, o, var)
             if expr is not None:
@@ -748,6 +774,10 @@ class ClassGenerator:
             if ver:
                 return ver
         if member.is_pointer and member.type == "char" and isinstance(value, str):
+            # a raw identifier/expression (e.g. capability .data() call) is
+            # used as-is; only actual text becomes a std::string
+            if _looks_like_expression(value):
+                return value
             svar = f"{var}_{base}_str"
             locals_.append(f"std::string {svar}({self._string_literal(value)});")
             return f"{svar}.c_str()"
@@ -794,12 +824,18 @@ class ClassGenerator:
                 f"class '{ref.class_name}'"
             )
         path = ref.object_name.split(".")
-        target = other.object(path[0])
+        head = path[0]
+        # capability results may be suffixed with .size()/.data() style calls
+        is_call_suffix = any(seg.endswith("()") for seg in path[1:])
+        target = other.object(head)
         if target is None:
-            if other.capabilities is None or not self._is_capability_member(other, path):
+            if (
+                other.capabilities is None
+                or not self._is_capability_member(other, path)
+            ):
                 raise GenerationError(
                     f"class '{self.cd.name}', object '{o.instance_name}': class "
-                    f"'{ref.class_name}' has no object '{path[0]}'"
+                    f"'{ref.class_name}' has no object '{head}'"
                 )
         elif target.binding.handle != member.type and len(path) == 1:
             raise GenerationError(
@@ -857,20 +893,57 @@ class ClassGenerator:
         return lines
 
 
+_RESULT_NAME_LINES = [
+    "// Generated by crater. Do not edit.",
+    "#pragma once",
+    "",
+    "#include <algorithm>",
+    "#include <stdexcept>",
+    "#include <string>",
+    "#include <string_view>",
+    "#include <vector>",
+    "#include <vulkan/vulkan.h>",
+    "",
+    "namespace crater {",
+    "inline const char* result_name(VkResult result) {",
+    "    switch (result) {",
+    '        case VK_SUCCESS: return "VK_SUCCESS";',
+    '        case VK_NOT_READY: return "VK_NOT_READY";',
+    '        case VK_TIMEOUT: return "VK_TIMEOUT";',
+    '        case VK_EVENT_SET: return "VK_EVENT_SET";',
+    '        case VK_EVENT_RESET: return "VK_EVENT_RESET";',
+    '        case VK_INCOMPLETE: return "VK_INCOMPLETE";',
+    '        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";',
+    '        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";',
+    '        case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";',
+    '        case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";',
+    '        case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";',
+    '        case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";',
+    '        case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";',
+    '        case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";',
+    '        case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";',
+    '        case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";',
+    '        case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";',
+    '        case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";',
+    '        case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE";',
+    '        case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";',
+    '        case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";',
+    '        case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";',
+    '        case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";',
+    '        case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR: return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";',
+    '        case VK_ERROR_VALIDATION_FAILED_EXT: return "VK_ERROR_VALIDATION_FAILED_EXT";',
+    '        default: return "VK_ERROR_<unknown>";',
+    "    }",
+    "}",
+    "}  // namespace crater",
+    "",
+]
+
+
 def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
     lookup = {c.name: c for c in spec_classes}
     ordered = _order_classes(spec_classes, lookup)
-    out: list[str] = [
-        "// Generated by crater. Do not edit.",
-        "#pragma once",
-        "",
-        "#include <algorithm>",
-        "#include <stdexcept>",
-        "#include <string>",
-        "#include <string_view>",
-        "#include <vector>",
-        "#include <vulkan/vulkan.h>",
-    ]
+    out: list[str] = list(_RESULT_NAME_LINES)
     for c in ordered:
         out.append("")
         if c.capabilities is not None:

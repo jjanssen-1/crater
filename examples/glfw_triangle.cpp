@@ -122,29 +122,21 @@ int main() {
     uint32_t glfwExtensionCount = 0;
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
-    // Enable the validation layer when it is installed (SDK). Enumerating
-    // layers is a runtime condition, so it stays imperative here.
-    std::vector<const char*> layers;
-    {
-        uint32_t count = 0;
-        vkEnumerateInstanceLayerProperties(&count, nullptr);
-        std::vector<VkLayerProperties> available(count);
-        vkEnumerateInstanceLayerProperties(&count, available.data());
-        for (const auto& layer : available) {
-            if (std::string_view(layer.layerName) == "VK_LAYER_KHRONOS_validation") {
-                layers.push_back("VK_LAYER_KHRONOS_validation");
-                break;
-            }
-        }
-    }
-    if (layers.empty()) {
-        std::fprintf(stderr, "note: VK_LAYER_KHRONOS_validation not found; \
-validation is disabled\n");
+    // The InstanceLayers capability class (generated) checks whether the
+    // validation layer is installed; the instance consumes its list.
+    // The layer is declared 'optional' in glfw_triangle.yaml; declaring it
+    // 'required' would make this constructor throw a clear error instead.
+    InstanceLayers layers;
+    if (!layers.hasKHRONOSValidation) {
+        std::fprintf(
+            stderr,
+            "note: VK_LAYER_KHRONOS_validation is not installed; validation "
+            "is disabled. Install your distribution's vulkan-validation "
+            "layers (e.g. 'sudo apt install vulkan-validationlayers') to "
+            "get validation output.\n");
     }
 
-    VulkanInstance vulkanInstance(
-        glfwExtensionCount, glfwExtensions,
-        static_cast<uint32_t>(layers.size()), layers.data());
+    VulkanInstance vulkanInstance(layers, glfwExtensionCount, glfwExtensions);
 
     VkPhysicalDevice physicalDevice = pickPhysicalDevice(vulkanInstance.instance);
 

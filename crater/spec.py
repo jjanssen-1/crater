@@ -403,7 +403,7 @@ def _quote_placeholders(text: str) -> str:
     return _PLACEHOLDER_TOKEN_RE.sub(repl, text)
 
 
-CLASS_REF_RE = re.compile(r"^(?P<class>[A-Z][A-Za-z0-9_]*)\.(?P<path>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)$")
+CLASS_REF_RE = re.compile(r"^(?P<class>[A-Z][A-Za-z0-9_]*)\.(?P<path>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*(?:\(\))?)*)$")
 IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 

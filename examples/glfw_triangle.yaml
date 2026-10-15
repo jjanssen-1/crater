@@ -4,6 +4,14 @@
 # runtime (GLFW extension list, window surface, shader code) are
 # constructor parameters. See examples/glfw_triangle.cpp.
 
+# Instance-level capabilities: the validation layer is checked up front.
+# 'optional' means: enable it when present, report when not; use
+# 'required' instead to make crater throw a clear error when missing.
+InstanceLayers:
+  vkEnumerateInstanceLayerProperties:
+    optional: [VK_LAYER_KHRONOS_validation]
+    as: layers
+
 VulkanInstance:
   VkInstance:
     name: instance
@@ -11,12 +19,12 @@ VulkanInstance:
       applicationName: "crater triangle"
       engineName: "crater"
       apiVersion: [1, 3, 0]
-    # GLFW provides the extension list at runtime; the validation layer
-    # is enabled by main.cpp when it is installed (see glfw_triangle.cpp).
+    # GLFW provides the extension list at runtime.
     enabledExtensionCount: {{ uint32_t glfwExtensionCount }}
     ppEnabledExtensionNames: {{ const char* const* glfwExtensions }}
-    enabledLayerCount: {{ uint32_t layerCount }}
-    ppEnabledLayerNames: {{ const char* const* layers }}
+    # the layer list comes from the InstanceLayers capability query above
+    enabledLayerCount: InstanceLayers.layers.size()
+    ppEnabledLayerNames: InstanceLayers.layers.data()
 
 DeviceCapabilities:
   physicalDevice: {{ VkPhysicalDevice physicalDevice }}
