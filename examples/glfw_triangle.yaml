@@ -107,6 +107,7 @@ TrianglePipeline:
       - stage: VK_SHADER_STAGE_FRAGMENT_BIT
         module: fragmentModule
         name: main
+    vertexInputState: {}
     inputAssemblyState:
       topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
     dynamicState:
@@ -128,6 +129,7 @@ TrianglePipeline:
         - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
   VkSwapchainKHR:
     name: swapchain
+    surface: SurfaceCapabilities.surface
     minImageCount: SurfaceCapabilities.surfaceCapabilities.minImageCount
     imageExtent: SurfaceCapabilities.surfaceCapabilities.currentExtent
     imageFormat: SurfaceCapabilities.surfaceFormat.format

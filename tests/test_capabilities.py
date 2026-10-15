@@ -344,3 +344,44 @@ Dev:
     assert "deviceCreateInfo.enabledExtensionCount = caps.extensions.size();" in out
     assert "deviceCreateInfo_enabledFeatures.samplerAnisotropy = VK_TRUE;" in out
     assert compile_generated(out, tmp_path)
+
+
+def test_capability_inputs_stored_and_referenced(registry: Registry, tmp_path):
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+SurfaceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  surface: {{ VkSurfaceKHR surface }}
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR:
+    as: surfaceCapabilities
+
+S:
+  VkSwapchainKHR:
+    name: swapchain
+    surface: SurfaceCapabilities.surface
+""",
+        registry,
+    )
+    assert "VkSurfaceKHR surface{};" in out
+    assert "swapchainCreateInfo.surface = surfaceCapabilities.surface;" in out
+    assert compile_generated(out, tmp_path)
+
+
+def test_literal_count_members_emitted(registry: Registry, tmp_path):
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+P:
+  VkGraphicsPipeline:
+    viewportState:
+      viewportCount: 1
+      scissorCount: 1
+""",
+        registry,
+    )
+    assert "graphicsPipelineCreateInfo_viewportState.viewportCount = 1;" in out
+    assert "graphicsPipelineCreateInfo_viewportState.scissorCount = 1;" in out
+    assert compile_generated(out, tmp_path)

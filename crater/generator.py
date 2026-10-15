@@ -135,8 +135,9 @@ class CapabilitiesGenerator:
     def generate(self) -> str:
         params = self.ctor_params()
         param_list = ", ".join(f"{t} {n}" for t, n in params)
+        inits = [f"{n}({n})" for _, n in params]
         lines: list[str] = [f"class {self.cd.name} {{", "public:"]
-        lines.append(f"    explicit {self.cd.name}({param_list}) {{")
+        lines.append(f"    explicit {self.cd.name}({param_list}){(' : ' + ', '.join(inits)) if inits else ''} {{")
         body: list[str] = []
         for qd in self.caps.queries:
             body.append("")
@@ -147,6 +148,13 @@ class CapabilitiesGenerator:
         lines.append("")
         lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
         lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
+        lines.append("")
+        lines.append("    // constructor inputs, stored for consumers")
+        for pname, ptype in self.caps.inputs:
+            cpp_type, cpp_name = self._input_param(pname, ptype)
+            if cpp_type.startswith("const "):
+                continue  # class references are not stored by value
+            lines.append(f"    {cpp_type} {cpp_name}{{}};")
         lines.append("")
         lines.append("    // query results")
         for qd in self.caps.queries:
@@ -711,7 +719,9 @@ class ClassGenerator:
                     f"class '{self.cd.name}', object '{o.instance_name}': '{key}' is not a "
                     f"member of {struct.resolved_name}"
                 )
-            if member.is_array_len_member and not isinstance(value, (Placeholder, Ref)):
+            if member.is_array_len_member and isinstance(value, dict):
+                continue  # count given as a struct makes no sense; derive it
+            if member.is_array_len_member and not isinstance(value, (Placeholder, Ref, int, float)):
                 continue  # counts are derived automatically unless given
             expr = self._emit_member_value(locals_, struct, member, value, o, var)
             if expr is not None:
@@ -853,6 +863,11 @@ class ClassGenerator:
         """Check that a member path resolves inside a capabilities class."""
         assert other.capabilities is not None
         head = path[0]
+        # stored constructor inputs are exposed members
+        for pname, ptype in other.capabilities.inputs:
+            _, cpp_name = self._caps_input_param(pname, ptype)
+            if cpp_name == head:
+                return True
         for qd in other.capabilities.queries:
             if qd.as_name == head:
                 return True
@@ -862,6 +877,13 @@ class ClassGenerator:
                 if self._caps_flag_name(name) == head:
                     return True
         return False
+
+    def _caps_input_param(self, name: str, ptype) -> tuple[str, str]:
+        if isinstance(ptype, Ref) and ptype.kind == "external":
+            return f"const {ptype.class_name}&", _lower_first(ptype.class_name)
+        if isinstance(ptype, Placeholder):
+            return ptype.explicit_type or "", ptype.name
+        return str(ptype), name
 
     @staticmethod
     def _caps_flag_name(extension_name: str) -> str:
