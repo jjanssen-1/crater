@@ -83,7 +83,7 @@ const uint32_t g_spvVertex[] = {
     0x00050036, 0x00000001, 0x00000003, 0x00000000, 0x00000002, // %3 = OpFunction %1 None %2
     0x000200F8, 0x00000004,                                    // %4 = OpLabel
     0x000100FD,                                                // OpReturn
-    0x00010100,                                                // OpFunctionEnd
+    0x00010038,                                                // OpFunctionEnd
 };
 const uint32_t g_spvFragment[] = {
     0x07230203, 0x00010000, 0x00080001, 0x00000005, 0x00000000,
@@ -97,7 +97,7 @@ const uint32_t g_spvFragment[] = {
     0x00050036, 0x00000001, 0x00000003, 0x00000000, 0x00000002,
     0x000200F8, 0x00000004,
     0x000100FD,
-    0x00010100,
+    0x00010038,
 };
 const uint32_t g_spvCompute[] = {
     0x07230203, 0x00010000, 0x00080001, 0x00000005, 0x00000000,
@@ -112,7 +112,7 @@ const uint32_t g_spvCompute[] = {
     0x00050036, 0x00000001, 0x00000003, 0x00000000, 0x00000002, // %3 = OpFunction %1 None %2
     0x000200F8, 0x00000004,                                    // %4 = OpLabel
     0x000100FD,                                                // OpReturn
-    0x00010100,                                                // OpFunctionEnd
+    0x00010038,                                                // OpFunctionEnd
 };
 
 }  // namespace
