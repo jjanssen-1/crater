@@ -111,3 +111,20 @@ python tools/pnext_showcase.py --run-specs /tmp/pnext-specs
 
 Current sweep: **916/916 compile, 0 generation errors, 0 compile
 errors** across 56 targets.
+
+### --live FILE
+
+Generates and runs a live executable: one spec chaining **every
+header-declared extender** of every physical-device query target
+(Features2 ~270 structs, Properties2 ~120, MemoryProperties2), queried
+against your real device. The driver fills the structs it supports and
+ignores unknown sTypes (that is how capability queries are designed);
+the runner reports which structs came back non-zero, and results are
+appended to FILE.
+
+```bash
+python tools/pnext_showcase.py --live results.md --out pnext_showcase.md
+```
+
+Strictly read-only: nothing is enabled, created, or written beyond the
+report. Platform-gated extenders are excluded automatically.
