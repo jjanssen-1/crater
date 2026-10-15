@@ -142,8 +142,7 @@ TrianglePipeline:
     compositeAlpha: VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
     clipped: true
   VkSemaphore:
-    - name: imageAvailable
-    - name: renderFinished
+    name: imageAvailable
   VkFence:
     name: inFlight
     flags: VK_FENCE_CREATE_SIGNALED_BIT

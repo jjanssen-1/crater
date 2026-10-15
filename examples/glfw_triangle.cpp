@@ -56,6 +56,7 @@ struct FrameResources {
     std::vector<VkImage> images;
     std::vector<VkImageView> views;
     std::vector<VkFramebuffer> framebuffers;
+    std::vector<VkSemaphore> renderFinished;  // one per swapchain image
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
@@ -91,8 +92,17 @@ struct FrameResources {
                 throw std::runtime_error("vkCreateFramebuffer failed");
         }
 
+        renderFinished.resize(imageCount);
+        for (uint32_t i = 0; i < imageCount; ++i) {
+            VkSemaphoreCreateInfo semInfo{};
+            semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vkCreateSemaphore(device, &semInfo, nullptr, &renderFinished[i]) != VK_SUCCESS)
+                throw std::runtime_error("vkCreateSemaphore failed");
+        }
+
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         poolInfo.queueFamilyIndex = queueFamilyIndex;
         if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
             throw std::runtime_error("vkCreateCommandPool failed");
@@ -108,6 +118,7 @@ struct FrameResources {
     void destroy(VkDevice device) {
         for (auto fb : framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
         for (auto view : views) vkDestroyImageView(device, view, nullptr);
+        for (auto sem : renderFinished) vkDestroySemaphore(device, sem, nullptr);
         if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
     }
 };
@@ -118,6 +129,11 @@ int main() {
     GLFWwindow* window = glfwCreateWindow(800, 600, "crater triangle", nullptr, nullptr);
 
     // --- crater takes over from here -------------------------------------
+    // Everything Vulkan lives in this scope: it ends before the GLFW
+    // teardown below, so the generated destructors run while the window
+    // system is still alive. (main's locals would otherwise destruct
+    // after glfwTerminate(), crashing in the Wayland backend.)
+    {
 
     // GLFW knows which instance extensions the window system needs.
     uint32_t glfwExtensionCount = 0;
@@ -212,6 +228,7 @@ int main() {
         vkResetCommandBuffer(frames.commandBuffer, 0);
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(frames.commandBuffer, &beginInfo);
 
         // viewport/scissor are dynamic pipeline states (see the yaml)
@@ -239,7 +256,7 @@ int main() {
 
         VkSemaphore waitSemaphores[] = {triangle.imageAvailable};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkSemaphore signalSemaphores[] = {triangle.renderFinished};
+        VkSemaphore signalSemaphores[] = {frames.renderFinished[imageIndex]};
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.waitSemaphoreCount = 1;
@@ -262,8 +279,10 @@ int main() {
         vkQueuePresentKHR(graphicsQueue, &presentInfo);
     }
 
-    vkDeviceWaitIdle(device.device);
-    frames.destroy(device.device);
+        vkDeviceWaitIdle(device.device);
+        frames.destroy(device.device);
+    }  // Vulkan objects (and the surface!) are destroyed here
+
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
