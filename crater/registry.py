@@ -107,6 +107,11 @@ class Registry:
 
     def _parse(self) -> None:
         for node in self._root.findall("types/type"):
+            api = node.get("api")
+            if api and "vulkan" not in api.split(",") and node.get("category") == "struct":
+                name = node.get("name")
+                if name in self.structs:
+                    continue
             category = node.get("category")
             name = node.get("name")
             if category == "struct":
@@ -119,7 +124,12 @@ class Registry:
 
         for node in self._root.findall("commands/command"):
             cmd = self._parse_command(node)
-            if cmd is not None:
+            if cmd is None:
+                continue
+            api = node.get("api")
+            if cmd.name in self.commands and api and "vulkan" not in api.split(","):
+                continue  # prefer core (vulkan) over restricted variants
+            if cmd.name not in self.commands or not api or "vulkan" in api.split(","):
                 self.commands[cmd.name] = cmd
 
         for node in self._root.findall("enums"):

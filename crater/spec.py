@@ -161,6 +161,45 @@ def _quote_placeholders(text: str) -> str:
     return _PLACEHOLDER_TOKEN_RE.sub(repl, text)
 
 
+CLASS_REF_RE = re.compile(r"^(?P<class>[A-Z][A-Za-z0-9_]*)\.(?P<object>[A-Za-z_]\w*)$")
+IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def _resolve_refs(classes: list[ClassDef]) -> None:
+    """Turn plain string values into Refs where they name another object.
+
+    A value is a reference if it matches 'Class.object' for a defined class
+    (external reference) or if it is a bare identifier naming an object in
+    the same class (sibling reference).
+    """
+    class_names = {c.name for c in classes}
+    for cd in classes:
+        sibling_names = {o.instance_name for o in cd.objects}
+        for o in cd.objects:
+            for key, value in list(o.params.items()):
+                o.params[key] = _resolve_value_refs(value, cd.name, sibling_names, class_names)
+
+
+def _resolve_value_refs(value: Any, class_name: str, sibling_names: set[str], class_names: set[str]) -> Any:
+    if isinstance(value, str):
+        m = CLASS_REF_RE.match(value)
+        if m and m.group("class") in class_names:
+            return Ref(kind="external", object_name=m.group("object"), class_name=m.group("class"))
+        if value in sibling_names:
+            return Ref(kind="sibling", object_name=value)
+        return value
+    if isinstance(value, StructValue):
+        value.fields = {
+            k: _resolve_value_refs(v, class_name, sibling_names, class_names)
+            for k, v in value.fields.items()
+        }
+        return value
+    if isinstance(value, ArrayValue):
+        value.items = [_resolve_value_refs(v, class_name, sibling_names, class_names) for v in value.items]
+        return value
+    return value
+
+
 def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
     data = yaml.safe_load(_quote_placeholders(text))
     if data is None:
@@ -180,4 +219,5 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
         if len(names) != len(set(names)):
             raise SpecError(f"class '{class_name}' contains duplicate object names: {names}")
         classes.append(cd)
+    _resolve_refs(classes)
     return classes
