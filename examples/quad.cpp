@@ -146,7 +146,7 @@ int main() {
         }
     }
 
-    QuadDevice device(physicalDevice, queueCreateInfos.data(),
+    QuadDevice device(caps, physicalDevice, queueCreateInfos.data(),
                        static_cast<uint32_t>(queueCreateInfos.size()));
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
