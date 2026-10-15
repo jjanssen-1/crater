@@ -697,13 +697,15 @@ class ClassGenerator:
             if member.is_pointer and member.type in self.registry.structs:
                 return f"&{expr}"
             return expr
-        if member.is_pointer and isinstance(value, StructValue):
+        if isinstance(value, StructValue) and (
+            member.is_pointer or (member.type.startswith("Vk") and self.registry.resolve_struct(member.type) is not None)
+        ):
             sub = self.registry.resolve_struct(member.type)
             if sub is None:
                 raise GenerationError(f"unknown struct {member.type}")
             subvar = f"{var}_{base}"
             self._emit_struct(locals_, sub, value.fields, subvar, o)
-            return f"&{subvar}"
+            return f"&{subvar}" if member.is_pointer else subvar
         if member.is_pointer and isinstance(value, ArrayValue):
             arrvar = f"{var}_{base}"
             sub = self.registry.resolve_struct(member.type) if member.type.startswith("Vk") else None

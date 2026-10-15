@@ -226,3 +226,27 @@ VulkanApp:
         registry,
     )
     assert compile_generated(out, tmp_path)
+
+
+def test_nested_struct_in_array_item(registry: Registry):
+    out = generate_from_spec(
+        """
+P:
+  VkGraphicsPipeline:
+    viewportState:
+      scissors:
+        - offset:
+            x: 5
+            y: 6
+          extent:
+            width: 800
+            height: 600
+""",
+        registry,
+    )
+    assert "VkOffset2D graphicsPipelineCreateInfo_viewportState_scissors_item0_offset{};" in out
+    assert "graphicsPipelineCreateInfo_viewportState_scissors_item0_offset.x = 5;" in out
+    assert (
+        "graphicsPipelineCreateInfo_viewportState_scissors_item0.extent = "
+        "graphicsPipelineCreateInfo_viewportState_scissors_item0_extent;" in out
+    )

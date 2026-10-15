@@ -90,8 +90,16 @@ TrianglePipeline:
     inputAssemblyState:
       topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
     viewportState:
-      viewportCount: 1
-      scissorCount: 1
+      viewports:
+        - x: 0.0
+          y: 0.0
+          width: SurfaceCapabilities.surfaceCapabilities.currentExtent.width
+          height: SurfaceCapabilities.surfaceCapabilities.currentExtent.height
+      scissors:
+        - offset:
+            x: 0
+            y: 0
+          extent: SurfaceCapabilities.surfaceCapabilities.currentExtent
     rasterizationState:
       polygonMode: VK_POLYGON_MODE_FILL
       lineWidth: 1.0
@@ -101,6 +109,7 @@ TrianglePipeline:
         - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
   VkSwapchainKHR:
     name: swapchain
+    minImageCount: SurfaceCapabilities.surfaceCapabilities.minImageCount
     imageExtent: SurfaceCapabilities.surfaceCapabilities.currentExtent
     imageFormat: SurfaceCapabilities.surfaceFormat.format
     imageColorSpace: SurfaceCapabilities.surfaceFormat.colorSpace
