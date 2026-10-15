@@ -80,6 +80,47 @@ OurPipeline(const VulkanInstance& vulkanInstance, VkDevice vkDevice,
   (`nullptr`), optional handles like `pipelineCache`
   (`VK_NULL_HANDLE`) — is derived from `vk.xml`. You never specify it.
 
+### Capabilities (queries and selection)
+
+Some values can only be known at runtime - surface formats, present
+modes, available extensions. A **capabilities class** queries them and
+selects values per your rules; other classes then consume the results.
+
+```yaml
+SurfaceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}  # query inputs
+  surface: {{ VkSurfaceKHR surface }}
+  VkSurfaceFormatKHR:            # queried type (inferred from vk.xml)
+    candidates:                  # ordered preference; first match wins
+      - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+    as: surfaceFormat            # name of the result member
+  VkPresentModeKHR:
+    candidates: [VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR]
+    fallback: any                # take any available if none match
+  VkExtensionProperties:         # availability query (extensions/layers)
+    required: [VK_KHR_swapchain]   # throws when missing
+    optional: [VK_KHR_display]     # becomes a hasXxx flag
+  VkSurfaceCapabilitiesKHR: {}   # plain struct query
+```
+
+Which command answers a query, its two-call count/array protocol and
+its required inputs are all inferred from the registry. Query inputs
+are constructor parameters; declared either as a placeholder, a
+`Class.object` reference (e.g. `instance: VulkanInstance.mainInstance`)
+or left to the default raw handle.
+
+Consuming classes reference results with member paths, which
+automatically adds the capabilities class as a constructor parameter:
+
+```yaml
+  VkSwapchainKHR:
+    imageFormat: SurfaceCapabilities.surfaceFormat.format
+    presentMode: SurfaceCapabilities.presentMode
+```
+
+Extensions/layers are *not* auto-enabled: capabilities report and
+select, enabling stays explicit in the CreateInfos.
+
 ### Grouping and lifetimes
 
 Objects that "stand together" are grouped in one class; the class
@@ -118,6 +159,8 @@ no Vulkan headers are found; set `VK_HEADERS_DIR` or install the
 ## Status
 
 Phase 1: object creation/destruction with full registry inference.
+Phase 2 (in progress): capability queries with preference-based
+selection and availability checks.
 Planned: window-system integration, physical device selection helpers,
 command buffer recording.
 
