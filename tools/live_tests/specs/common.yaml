@@ -1,0 +1,21 @@
+# Shared foundation for the live-device tests: instance and device
+# with broadly available settings. The harness constructs these first
+# and passes them to the object tests.
+
+LiveInstance:
+  VkInstance:
+    name: instance
+    applicationInfo:
+      applicationName: "crater live tests"
+      engineName: "crater"
+      apiVersion: [1, 1, 0]
+    enabledExtensionCount: {{ uint32_t extensionCount }}
+    ppEnabledExtensionNames: {{ const char* const* extensions }}
+
+LiveDevice:
+  VkDevice:
+    name: device
+    queueCreateInfos:
+      - queueFamilyIndex: {{ uint32_t graphicsFamilyIndex }}
+        queueCount: 1
+        pQueuePriorities: [1.0]

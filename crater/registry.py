@@ -439,15 +439,15 @@ class Registry:
     def _find_destroy(self, commands: dict[str, Command], binding: CreateInfoBinding):
         candidates = []
         for cmd in commands.values():
-            if cmd.name.startswith("vkDestroy") and cmd.return_type == "void":
+            if cmd.name.startswith(("vkDestroy", "vkFree")) and cmd.return_type in ("void", "VkResult"):
                 if any(p.type == binding.handle and not p.is_pointer for p in cmd.params):
                     candidates.append(cmd)
         if not candidates:
             return None
         # prefer the destroy command whose name matches the create command
         stem_create = binding.create_command[len("vkCreate") :]
-        preferred = f"vkDestroy{stem_create}"
-        exact = [c for c in candidates if c.name == preferred]
+        preferred = [f"vkDestroy{stem_create}", f"vkFree{stem_create}"]
+        exact = [c for c in candidates if c.name in preferred]
         if exact:
             cmd = exact[0]
         else:

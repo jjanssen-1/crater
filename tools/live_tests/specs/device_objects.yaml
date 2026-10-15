@@ -1,0 +1,85 @@
+# Device-level objects with sensible, broadly supported parameters.
+# Each class is constructed against the live device by the harness and
+# destructed again - nothing here renders, presents, or has lasting
+# effects beyond driver-internal state.
+
+SyncObjects:
+  VkFence:
+    name: fence
+    flags: VK_FENCE_CREATE_SIGNALED_BIT
+  VkSemaphore:
+    name: semaphore
+  VkEvent:
+    name: event
+
+MemoryObjects:
+  VkBuffer:
+    name: buffer
+    size: 65536
+    usage: VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+  VkImage:
+    name: image
+    imageType: VK_IMAGE_TYPE_2D
+    format: VK_FORMAT_R8G8B8A8_UNORM
+    extent: {{ VkExtent3D extent }}
+    mipLevels: 1
+    arrayLayers: 1
+    samples: VK_SAMPLE_COUNT_1_BIT
+    tiling: VK_IMAGE_TILING_OPTIMAL
+    usage: VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+    initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+
+ViewObjects:
+  VkImageView:
+    name: view
+    image: {{ VkImage image }}
+    viewType: VK_IMAGE_VIEW_TYPE_2D
+    format: VK_FORMAT_R8G8B8A8_UNORM
+    subresourceRange:
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT
+      levelCount: 1
+      layerCount: 1
+
+SamplerObjects:
+  VkSampler:
+    name: sampler
+    magFilter: VK_FILTER_LINEAR
+    minFilter: VK_FILTER_LINEAR
+    mipmapMode: VK_SAMPLER_MIPMAP_MODE_LINEAR
+    addressModeU: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+    addressModeV: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+    addressModeW: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+    maxLod: 1.0
+
+DescriptorObjects:
+  VkDescriptorSetLayout:
+    name: layout
+    bindings:
+      - binding: 0
+        descriptorType: VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+        descriptorCount: 1
+        stageFlags: VK_SHADER_STAGE_FRAGMENT_BIT
+
+QueryObjects:
+  VkQueryPool:
+    name: queryPool
+    queryType: VK_QUERY_TYPE_TIMESTAMP
+    queryCount: 8
+
+CommandObjects:
+  VkCommandPool:
+    name: commandPool
+    flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+    queueFamilyIndex: {{ uint32_t graphicsFamilyIndex }}
+
+PipelineObjects:
+  VkShaderModule:
+    name: shaderModule
+    codeSize: {{ size_t codeSize }}
+    pCode: {{ const uint32_t* code }}
+  VkPipelineCache:
+    name: pipelineCache
+  VkPipelineLayout:
+    name: pipelineLayout

@@ -40,3 +40,26 @@ so even a driver crash cannot take the sweep down.
 
 The last full sweep: 69/78 compile, 9 platform-gated, 0 generation
 errors, 0 compile errors.
+
+## live_tests/
+
+Manual specs with sensible parameters for every core device-level
+object, run against a **real Vulkan device** - as opposed to the
+compile-only sweep above.
+
+```bash
+tools/live_tests/run.sh my_results.md
+```
+
+- `specs/*.yaml`: hand-written object definitions (sync, memory, views,
+  samplers, descriptors, queries, command pool, pipeline objects,
+  render pass, framebuffer, graphics + compute pipeline)
+- `harness.cpp`: constructs instance/device, then each generated class
+  with real handles; every test is isolated (one failure does not stop
+  the sweep) and the outcome table is written to the results file
+
+Safety: only object creation/destruction. No rendering, no
+presentation, no external reads/writes beyond the results file.
+
+The sandbox has no GPU, so this is meant to run on real hardware -
+please report the results file contents if anything fails.
