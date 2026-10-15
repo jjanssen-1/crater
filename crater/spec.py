@@ -427,7 +427,12 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
         if not isinstance(class_body, dict):
             raise SpecError(f"class '{class_name}' must be a mapping of Vulkan objects")
         cd = ClassDef(name=class_name)
-        is_capabilities = any(k in queries for k in class_body)
+        is_capabilities = any(k in queries or k.startswith("vk") for k in class_body)
+        if is_capabilities and not any(k in queries for k in class_body):
+            raise SpecError(
+                f"class '{class_name}': no capability queries declared "
+                f"(keys starting with 'vk' are treated as commands)"
+            )
         declared_inputs: dict[str, Any] = {}
         for command_name, entry in class_body.items():
             if command_name in queries:

@@ -148,10 +148,11 @@ class CapabilitiesGenerator:
 
     def _result_members(self, qd: QueryDef) -> list[str]:
         qb = qd.binding
-        if qb.shape == "array":
-            return [f"{qd.queried_type} {qd.as_name}{{}};"]
-        if qb.shape == "struct":
-            return [f"{qd.queried_type} {qd.as_name}{{}};"]
+        if qb.shape in ("array", "struct"):
+            members = [f"{qd.queried_type} {qd.as_name}{{}};"]
+            if qb.shape == "array" and qd.index:
+                members.append(f"uint32_t {qd.as_name}Index{{}};")
+            return members
         # present: availability flags per declared name
         return [f"bool {self._flag_name(name)}{{false}};" for name in qd.required + qd.optional]
 
@@ -195,12 +196,17 @@ class CapabilitiesGenerator:
             call2 = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, count=f'&{count_var}', out=f'{vec}.data()'))})"
             lines.append(self._vk_call(call2, cmd, f"{qb.query_command} failed"))
             lines.append("")
-            if qd.candidates:
-                return lines + self._gen_selection(qd, vec)
-            lines.append(f"if ({vec}.empty()) {{")
-            lines.append(f'    throw std::runtime_error("{qd.queried_type}: no options available");')
-            lines.append("}")
-            lines.append(f"{qd.as_name} = {vec}[0];")
+            if qd.require or qd.prefer:
+                lines.extend(self._gen_predicate_selection(qd, vec))
+            elif qd.candidates:
+                lines.extend(self._gen_selection(qd, vec))
+            else:
+                lines.append(f"if ({vec}.empty()) {{")
+                lines.append(f'    throw std::runtime_error("{qd.queried_type}: no options available");')
+                lines.append("}")
+                lines.append(f"{qd.as_name} = {vec}[0];")
+                if qd.index:
+                    lines.append(f"{qd.as_name}Index = 0;")
             return lines
         if qb.shape == "struct":
             out_addr = f"&{qd.as_name}"
@@ -231,6 +237,53 @@ class CapabilitiesGenerator:
         for name in qd.optional:
             flag = self._flag_name(name)
             lines.append(f"{flag} = std::any_of({vec}.begin(), {vec}.end(), [&](const {qb.enumerated_type}& e) {{ return std::string_view(e.{qb.name_member}) == {self._string_literal(name)}; }});")
+        return lines
+
+    def _gen_predicate_selection(self, qd: QueryDef, vec: str) -> list[str]:
+        """Selection driven by require/prefer member predicates.
+
+        require: an element qualifies when every listed member has all the
+        required bits set. prefer: among qualifying elements, the one with
+        the most preferred bits wins (first such element on ties). Single
+        pass, no allocation.
+        """
+        it = f"const {qd.queried_type}&"
+        best = f"{qd.as_name}Best"
+        best_rank = f"{qd.as_name}BestRank"
+        best_index = f"{qd.as_name}BestIndex"
+        rank = f"{qd.as_name}Rank"
+
+        def bits_expr(member: str, bits: list[str]) -> str:
+            mask = " | ".join(bits)
+            return f"((e.{member} & ({mask})) == ({mask}))"
+
+        require_conds = [bits_expr(m, b) for m, b in qd.require.items()]
+
+        lines = [f"uint32_t {best_rank} = 0; // 0 = no match yet"]
+        lines.append(f"uint32_t {best_index} = 0;")
+        lines.append(f"{qd.queried_type} {best};")
+        lines.append(f"for (uint32_t i = 0; i < {qd.as_name}Count; ++i) {{")
+        lines.append(f"    {it} e = {vec}[i];")
+        if require_conds:
+            lines.append(f"    if (!({' && '.join(require_conds)})) {{ continue; }}")
+        lines.append(f"    uint32_t {rank} = 1;")
+        for member, bits in qd.prefer.items():
+            for b in bits:
+                lines.append(f"    if ({bits_expr(member, [b])}) {{ ++{rank}; }}")
+        lines.append(f"    if ({rank} > {best_rank}) {{")
+        lines.append(f"        {best} = e;")
+        lines.append(f"        {best_rank} = {rank};")
+        lines.append(f"        {best_index} = i;")
+        lines.append("    }")
+        lines.append("}")
+        lines.append(f"if ({best_rank} == 0) {{")
+        lines.append(
+            f'    throw std::runtime_error("no {qd.queried_type} satisfying the required capabilities");'
+        )
+        lines.append("}")
+        lines.append(f"{qd.as_name} = {best};")
+        if qd.index:
+            lines.append(f"{qd.as_name}Index = {best_index};")
         return lines
 
     def _gen_selection(self, qd: QueryDef, vec: str) -> list[str]:
@@ -634,7 +687,10 @@ class ClassGenerator:
         if isinstance(value, Placeholder):
             return value.name
         if isinstance(value, Ref):
-            return self._ref_expr(value, o, member)
+            expr = self._ref_expr(value, o, member)
+            if member.is_pointer and member.type in self.registry.structs:
+                return f"&{expr}"
+            return expr
         if member.is_pointer and isinstance(value, StructValue):
             sub = self.registry.resolve_struct(member.type)
             if sub is None:
@@ -752,7 +808,20 @@ class ClassGenerator:
         for qd in other.capabilities.queries:
             if qd.as_name == head:
                 return True
+            if qd.index and f"{qd.as_name}Index" == head:
+                return True
+            for name in qd.required + qd.optional:
+                if self._caps_flag_name(name) == head:
+                    return True
         return False
+
+    @staticmethod
+    def _caps_flag_name(extension_name: str) -> str:
+        parts = extension_name.split("_")
+        if parts[0] in ("VK", "VK_LAYER"):
+            parts = parts[1:]
+        body = parts[0] + "".join(p.capitalize() for p in parts[1:])
+        return "has" + body[0].upper() + body[1:]
 
     # object destruction ---------------------------------------------------
 

@@ -90,21 +90,51 @@ selects values per your rules; other classes then consume the results.
 SurfaceCapabilities:
   physicalDevice: {{ VkPhysicalDevice physicalDevice }}  # query inputs
   surface: {{ VkSurfaceKHR surface }}
-  VkSurfaceFormatKHR:            # queried type (inferred from vk.xml)
+  vkGetPhysicalDeviceSurfaceFormatsKHR:            # the query command itself
     candidates:                  # ordered preference; first match wins
       - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
     as: surfaceFormat            # name of the result member
-  VkPresentModeKHR:
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
     candidates: [VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR]
     fallback: any                # take any available if none match
-  VkExtensionProperties:         # availability query (extensions/layers)
+  vkEnumerateDeviceExtensionProperties:   # availability (extensions/layers)
     required: [VK_KHR_swapchain]   # throws when missing
     optional: [VK_KHR_display]     # becomes a hasXxx flag
-  VkSurfaceCapabilitiesKHR: {}   # plain struct query
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {}   # plain struct query
 ```
 
-Which command answers a query, its two-call count/array protocol and
-its required inputs are all inferred from the registry. Query inputs
+Queries are keyed by **command name** - you say exactly which function
+is called, so there is no ambiguity (instance vs. device enumeration
+etc.). The command's shape (two-call count/array, single struct,
+availability), its result type and its required inputs are still
+inferred from the registry.
+
+**Flag-aware selection** picks queue families and similar flag-carrying
+entries; bit names are validated against the registry at generation
+time:
+
+```yaml
+DeviceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }  # must have all bits
+    prefer:  { queueFlags: VK_QUEUE_COMPUTE_BIT }   # rank among matches
+    index: true        # also expose graphicsQueueFamilyIndex
+    as: graphicsQueueFamily
+```
+
+With `index: true` the selection exposes the element's index, which is
+what e.g. `VkDeviceQueueCreateInfo::queueFamilyIndex` needs:
+
+```yaml
+VulkanDevice:
+  VkDevice:
+    queueCreateInfos:
+      - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
+        queueCount: 1
+        pQueuePriorities: [1.0]
+    enabledFeatures: DeviceCapabilities.features.features
+``` Query inputs
 are constructor parameters; declared either as a placeholder, a
 `Class.object` reference (e.g. `instance: VulkanInstance.mainInstance`)
 or left to the default raw handle.

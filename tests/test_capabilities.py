@@ -166,3 +166,84 @@ Caps:
 """,
             registry,
         )
+
+
+DEVICE_SPEC = """
+DeviceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+    prefer: { queueFlags: VK_QUEUE_COMPUTE_BIT }
+    index: true
+    as: graphicsQueueFamily
+  vkGetPhysicalDeviceFeatures2:
+    as: features
+"""
+
+
+def test_require_prefer_index_generation(registry: Registry):
+    from conftest import generate_from_spec
+
+    out = generate_from_spec(DEVICE_SPEC, registry)
+    # require predicate over flags
+    assert "((e.queueFlags & (VK_QUEUE_GRAPHICS_BIT)) == (VK_QUEUE_GRAPHICS_BIT))" in out
+    # prefer ranking
+    assert "++graphicsQueueFamilyRank;" in out
+    # index member
+    assert "uint32_t graphicsQueueFamilyIndex{};" in out
+    assert "graphicsQueueFamilyIndex = graphicsQueueFamilyBestIndex;" in out
+
+
+def test_require_prefer_compile(registry: Registry, tmp_path):
+    from conftest import generate_from_spec
+
+    out = generate_from_spec(DEVICE_SPEC, registry)
+    assert compile_generated(out, tmp_path)
+
+
+def test_device_creation_uses_selection(registry: Registry, tmp_path):
+    from conftest import generate_from_spec
+
+    out = generate_from_spec(
+        DEVICE_SPEC
+        + """
+VulkanDevice:
+  VkDevice:
+    name: device
+    queueCreateInfos:
+      - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
+        queueCount: 1
+        pQueuePriorities: [1.0]
+    enabledFeatures: DeviceCapabilities.features.features
+""",
+        registry,
+    )
+    assert "queueFamilyIndex = deviceCapabilities.graphicsQueueFamilyIndex;" in out
+    assert "pEnabledFeatures = &deviceCapabilities.features.features;" in out
+    assert compile_generated(out, tmp_path)
+
+
+def test_invalid_flag_bit_rejected(registry: Registry):
+    with pytest.raises(SpecError):
+        parse_spec(
+            """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_NOT_A_REAL_BIT }
+""",
+            registry,
+        )
+
+
+def test_invalid_predicate_member_rejected(registry: Registry):
+    with pytest.raises(SpecError):
+        parse_spec(
+            """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { notAMember: VK_QUEUE_GRAPHICS_BIT }
+""",
+            registry,
+        )

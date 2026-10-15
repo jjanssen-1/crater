@@ -19,7 +19,14 @@ int main() {
     std::vector<uint32_t> fragmentShader = {0x07230203, 0x00010000, 0x0008000b};
 
     VulkanInstance instance;
-    VulkanDevice device(physicalDevice);
+
+    // Selects a queue family (graphics required, compute preferred) and
+    // queries the supported features.
+    DeviceCapabilities deviceCapabilities(physicalDevice);
+
+    // Device creation consumes the selected queue family index and the
+    // queried features.
+    VulkanDevice device(deviceCapabilities, physicalDevice);
 
     // Queries surface formats/present modes/capabilities at runtime and
     // selects values according to the preference lists in triangle.yaml.
