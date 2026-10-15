@@ -125,7 +125,29 @@ int main() {
     // capabilities: extensions, graphics + transfer families (one
     // shared query), core + 1.1/1.2 features via pNext
     QuadDeviceCapabilities caps(physicalDevice);
-    QuadDevice device(caps, physicalDevice);
+    // the queue list is runtime data: duplicate family entries are
+    // invalid, so a shared graphics/transfer family gets ONE entry
+    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+    {
+        static const float priorities[] = {1.0f};
+        VkDeviceQueueCreateInfo graphics{};
+        graphics.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        graphics.queueFamilyIndex = caps.graphicsQueueFamilyIndex;
+        graphics.queueCount = 1;
+        graphics.pQueuePriorities = priorities;
+        queueCreateInfos.push_back(graphics);
+        if (caps.transferQueueFamilyIndex != caps.graphicsQueueFamilyIndex) {
+            VkDeviceQueueCreateInfo transfer{};
+            transfer.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            transfer.queueFamilyIndex = caps.transferQueueFamilyIndex;
+            transfer.queueCount = 1;
+            transfer.pQueuePriorities = priorities;
+            queueCreateInfos.push_back(transfer);
+        }
+    }
+
+    QuadDevice device(physicalDevice, queueCreateInfos.data(),
+                       static_cast<uint32_t>(queueCreateInfos.size()));
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue transferQueue = VK_NULL_HANDLE;
@@ -146,7 +168,6 @@ int main() {
     QuadUniform uniform(device);
     QuadGeometry geometry(device);
     QuadTexture texture(device, VkExtent3D{64, 64, 1});
-    QuadTextureView textureView(device, texture.textureImage);
     QuadSampler sampler(device);
 
     // bind memory: uniform host-visible, geometry + texture device-local
@@ -173,6 +194,8 @@ int main() {
     VkDeviceMemory textureMemory = allocate(device.device, physicalDevice, reqs,
                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     vkBindImageMemory(device.device, texture.textureImage, textureMemory, 0);
+    // views require bound memory: create the view after the bind
+    QuadTextureView textureView(device, texture.textureImage);
 
     // checkerboard pixel data (8x8 checkerboard scaled to 64x64)
     std::vector<uint8_t> texelData(64 * 64 * 4);
@@ -270,7 +293,10 @@ int main() {
         ai.commandBufferCount = 1;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         vkAllocateCommandBuffers(device.device, &ai, &cmd);
-        vkBeginCommandBuffer(cmd, nullptr);
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &bi);
 
         // image layout transition then copy
         VkImageMemoryBarrier barrier{};

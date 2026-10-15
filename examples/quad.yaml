@@ -51,16 +51,16 @@ QuadDeviceCapabilities:
       - VkPhysicalDeviceVulkan12Features: {}
     as: features
 
+# The queue list is runtime data: whether the graphics and transfer
+# selections land on the same family (no dedicated transfer queue) is
+# only known after the capability query, and duplicate family entries
+# in queueCreateInfos are invalid. quad.cpp builds the list (one entry
+# for a shared family, two otherwise) and passes it in.
 QuadDevice:
   VkDevice:
     name: device
-    queueCreateInfos:
-      - queueFamilyIndex: QuadDeviceCapabilities.graphicsQueueFamilyIndex
-        queueCount: 1
-        pQueuePriorities: [1.0]
-      - queueFamilyIndex: QuadDeviceCapabilities.transferQueueFamilyIndex
-        queueCount: 1
-        pQueuePriorities: [1.0]
+    queueCreateInfos: {{ const VkDeviceQueueCreateInfo* queueCreateInfos }}
+    queueCreateInfoCount: {{ uint32_t queueCreateInfoCount }}
 
 QuadSurfaceCapabilities:
   physicalDevice: {{ VkPhysicalDevice physicalDevice }}
