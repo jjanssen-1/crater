@@ -844,12 +844,7 @@ class ClassGenerator:
             lines.extend(_indent(self._gen_object_creation(o), 8))
         lines.append("}")
         lines.append("")
-        lines.append(f"    ~{self.cd.name}() {{")
-        for o in reversed(self.ordered_objects()):
-            lines.append("")
-            lines.append(f"        // {o.vulkan_name} '{o.instance_name}'")
-            lines.extend(_indent(self._gen_object_destruction(o), 8))
-        lines.append("}")
+        lines.append(f"    ~{self.cd.name}() {{ destroyHandles(); }}")
         lines.append("")
         lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
         lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
@@ -863,6 +858,7 @@ class ClassGenerator:
         lines.append("    }")
         lines.append(f"    {self.cd.name}& operator=({self.cd.name}&& other) noexcept {{")
         lines.append("        if (this != &other) {")
+        lines.append("            destroyHandles();")
         for m in member_list:
             lines.append(f"            {m} = other.{m};")
             lines.append(f"            other.{m} = VK_NULL_HANDLE;")
@@ -873,6 +869,13 @@ class ClassGenerator:
         lines.append("    // Vulkan handles created by this class")
         for o in self.ordered_objects():
             lines.append(f"    {o.binding.handle} {o.instance_name}{{}};")
+        lines.append("")
+        lines.append("    void destroyHandles() noexcept {")
+        for o in reversed(self.ordered_objects()):
+            lines.append("")
+            lines.append(f"        // {o.vulkan_name} '{o.instance_name}'")
+            lines.extend(_indent(self._gen_object_destruction(o), 4))
+        lines.append("    }")
         private_members = self._private_members()
         if private_members:
             lines.append("")
