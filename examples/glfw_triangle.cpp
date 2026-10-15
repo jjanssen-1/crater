@@ -221,16 +221,16 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        FrameSync::waitForFences(device.device, 1, &triangle.inFlight);
-        FrameSync::resetFences(device.device, 1, &triangle.inFlight);
+        waitForFences(device.device, 1, &triangle.inFlight);
+        resetFences(device.device, 1, &triangle.inFlight);
 
         uint32_t imageIndex = 0;
-        FrameSync::acquireNextImageKHR(
+        acquireNextImageKHR(
             device.device, triangle.swapchain, triangle.imageAvailable,
             VK_NULL_HANDLE, imageIndex);
 
         vkResetCommandBuffer(frames.commandBuffer, 0);
-        FrameSync::beginCommandBuffer(frames.commandBuffer);
+        beginCommandBuffer(frames.commandBuffer);
 
         // viewport/scissor are dynamic pipeline states (see the yaml)
         uint32_t width = swapchainExtent.width;
@@ -252,7 +252,7 @@ int main() {
         vkCmdBindPipeline(frames.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, triangle.pipeline);
         vkCmdDraw(frames.commandBuffer, 3, 1, 0, 0);
         vkCmdEndRenderPass(frames.commandBuffer);
-        FrameSync::endCommandBuffer(frames.commandBuffer);
+        endCommandBuffer(frames.commandBuffer);
 
         VkSemaphore waitSemaphores[] = {triangle.imageAvailable};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};

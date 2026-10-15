@@ -171,13 +171,19 @@ FrameSync:
     timeout: 1000000000
 ```
 
-generates static helpers:
+generates free-standing inline helpers:
 
 ```cpp
-FrameSync::waitForFences(device, 1, &inFlight);          // waitAll/timeout baked in
-FrameSync::beginCommandBuffer(commandBuffer);             // ONE_TIME_SUBMIT baked in
-FrameSync::acquireNextImageKHR(device, swapchain,
-                               semaphore, fence, imageIndex);  // output by reference
+waitForFences(device, 1, &inFlight);          // waitAll/timeout baked in
+beginCommandBuffer(commandBuffer);             // ONE_TIME_SUBMIT baked in
+acquireNextImageKHR(device, swapchain,
+                    semaphore, fence, imageIndex);  // output by reference
+```
+
+A top-level `namespace:` key wraps everything the generator emits:
+
+```yaml
+namespace: myvk
 ```
 
 This keeps crater an object/structure assistant: rendering logic stays

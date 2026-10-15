@@ -471,6 +471,15 @@ def _resolve_value_refs(value: Any, class_name: str, sibling_names: set[str], cl
     return value
 
 
+NAMESPACE_KEY = "namespace"
+_SPEC_NAMESPACE = None
+
+
+def spec_namespace() -> str | None:
+    """The namespace requested by the last parsed spec, if any."""
+    return _SPEC_NAMESPACE
+
+
 def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
     data = yaml.safe_load(_quote_placeholders(text))
     if data is None:
@@ -479,6 +488,11 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
         raise SpecError("top level of the spec must be a mapping of class names")
     bindings = registry.bindings()
     queries = registry.queries()
+    # an optional top-level 'namespace' key wraps all generated code
+    global _SPEC_NAMESPACE
+    _SPEC_NAMESPACE = data.pop(NAMESPACE_KEY, None)
+    if _SPEC_NAMESPACE is not None and not isinstance(_SPEC_NAMESPACE, str):
+        raise SpecError("'namespace' must be a string")
 
     classes: list[ClassDef] = []
     for class_name, class_body in data.items():

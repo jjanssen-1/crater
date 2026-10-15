@@ -111,16 +111,11 @@ class CallGenerator:
         return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
     def generate(self) -> str:
-        lines: list[str] = [f"class {self.cd.name} {{", "public:"]
+        lines: list[str] = [f"// call functions ({self.cd.name})"]
         for call in self.cd.calls:
             lines.append("")
             lines.extend(self._gen_call(call))
-        lines.append("")
-        lines.append(f"    {self.cd.name}() = default;")
-        lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
-        lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
-        lines.append("};")
-        return "\n".join(lines)
+        return chr(10).join(lines)
 
     def _gen_call(self, call: CallDef) -> list[str]:
         cmd = self.registry.resolve_command(call.command_name)
@@ -177,22 +172,25 @@ class CallGenerator:
             args.insert(cmd.params.index(info_param), f"&{info_var}")
 
         param_list = ", ".join(f"{t} {n}" for t, n in fparams)
-        lines = [f"    static {cmd.return_type if cmd.return_type != 'void' else 'void'} {call.as_name}({param_list}) {{"]
-        lines.extend(f"        {l}" for l in locals_)
+        ret = cmd.return_type if cmd.return_type != "void" else "void"
+        lines = [f"inline {ret} {call.as_name}({param_list}) {{"]
+        lines.extend(f"    {l}" for l in locals_)
 
         call_expr = f"{call.command_name}({', '.join(args)})"
         if cmd.return_type == "void":
-            lines.append(f"        {call_expr};")
+            lines.append(f"    {call_expr};")
         else:
             success = cmd.successcodes or ["VK_SUCCESS"]
             checks = " || ".join(f"result__ == {s}" for s in success)
-            lines.append(f"        VkResult result__ = {call_expr};")
-            lines.append(f"        if (!({checks})) {{")
-            lines.append(f'            throw std::runtime_error(std::string("{call.command_name} failed (") + crater::result_name(result__) + ")");')
-            lines.append("        }")
-            if cmd.return_type != "void":
-                lines.append("        return result__;")
-        lines.append("    }")
+            error = f"{call.command_name} failed ("
+            lines.append(f"    VkResult result__ = {call_expr};")
+            lines.append(f"    if (!({checks})) {{")
+            lines.append(
+                f'        throw std::runtime_error(std::string("{error}") + crater::result_name(result__) + ")");'
+            )
+            lines.append("    }")
+            lines.append("    return result__;")
+        lines.append("}")
         return lines
 
     def _param_type(self, p, placeholder):
@@ -301,7 +299,7 @@ class CapabilitiesGenerator:
             body.append(f"        // {qd.queried_type} -> {qd.as_name}")
             body.extend(_indent(self._gen_query(qd, params), 8))
         lines += body
-        lines.append("    }")
+        lines.append("}")
         lines.append("")
         lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
         lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
@@ -468,7 +466,7 @@ class CapabilitiesGenerator:
         lines.append(f"        {best} = e;")
         lines.append(f"        {best_rank} = {rank};")
         lines.append(f"        {best_index} = i;")
-        lines.append("    }")
+        lines.append("}")
         lines.append("}")
         lines.append(f"if ({best_rank} == 0) {{")
         lines.append(
@@ -505,6 +503,8 @@ class CapabilitiesGenerator:
                 lines.append(f"    for (const {qd.queried_type}& e : {vec}) {{")
                 lines.append(f"        if ({cond}) {{")
                 lines.append(f"            {qd.as_name} = e;")
+                if qd.index:
+                    lines.append(f"            {qd.as_name}Index = static_cast<uint32_t>(&e - {vec}.data());")
                 lines.append(f"            {matched} = true;")
                 lines.append("        }")
                 lines.append("    }")
@@ -749,14 +749,14 @@ class ClassGenerator:
             lines.append("")
             lines.append(f"        // {o.vulkan_name} '{o.instance_name}'")
             lines.extend(_indent(self._gen_object_creation(o), 8))
-        lines.append("    }")
+        lines.append("}")
         lines.append("")
         lines.append(f"    ~{self.cd.name}() {{")
         for o in reversed(self.ordered_objects()):
             lines.append("")
             lines.append(f"        // {o.vulkan_name} '{o.instance_name}'")
             lines.extend(_indent(self._gen_object_destruction(o), 8))
-        lines.append("    }")
+        lines.append("}")
         lines.append("")
         lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
         lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
@@ -1124,9 +1124,14 @@ _RESULT_NAME_LINES = [
 
 
 def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
+    from .spec import spec_namespace
+
     lookup = {c.name: c for c in spec_classes}
     ordered = _order_classes(spec_classes, lookup)
+    ns = spec_namespace()
     out: list[str] = list(_RESULT_NAME_LINES)
+    if ns:
+        out.append(f"namespace {ns} {{")
     for c in ordered:
         out.append("")
         if c.capabilities is not None:
@@ -1136,6 +1141,9 @@ def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
         else:
             gen = ClassGenerator(c, registry, lookup)
             out.append(gen.generate())
+    if ns:
+        out.append("")
+        out.append(f"}}  // namespace {ns}")
     return "\n".join(out)
 
 
