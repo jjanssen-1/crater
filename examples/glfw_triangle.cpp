@@ -214,7 +214,10 @@ int main() {
     frames.create(device.device, triangle, capabilities.surfaceFormat.format, swapchainExtent, deviceCapabilities.graphicsQueueFamilyIndex);
 
     // --- render loop: the imperative part stays imperative ----------------
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    // alpha 0.0f instead of 1.0f keeps the clear compressible on GPUs
+    // with color compression (NVIDIA best-practices); the triangle is
+    // opaque anyway
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -281,7 +284,10 @@ int main() {
 
         vkDeviceWaitIdle(device.device);
         frames.destroy(device.device);
-    }  // Vulkan objects (and the surface!) are destroyed here
+        // GLFW creates the surface but does not destroy it; it belongs to
+        // the instance, so it must go before VulkanInstance destructs.
+        vkDestroySurfaceKHR(vulkanInstance.instance, surface, nullptr);
+    }  // Vulkan objects are destroyed here
 
     glfwDestroyWindow(window);
     glfwTerminate();
