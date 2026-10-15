@@ -17,7 +17,9 @@ all generated code is plain, readable C++ with zero runtime overhead.
 pip install .
 ```
 
-Requires Python ≥ 3.10 and PyYAML.
+Requires Python ≥ 3.10, PyYAML and a Vulkan registry (`vk.xml`). crater
+finds it via `$VULKAN_SDK` / system locations, or you point it at one
+with `--registry` / `$CRATER_VK_XML`.
 
 ## Usage
 
@@ -91,8 +93,8 @@ crater contains **no per-type logic**. Which command creates an object,
 which `Vk*CreateInfo` it takes, which parameters are parents, what the
 destroy command is and whether creation is plural
 (`vkCreateGraphicsPipelines`) is all inferred from command signatures in
-`vk.xml` (vendored under `crater/data`, pass `--registry` to use
-another copy).
+`vk.xml`. The registry is read from your Vulkan SDK (`$VULKAN_SDK`),
+a system location, `--registry` or `$CRATER_VK_XML`; it is not bundled.
 
 ## Benchmark: the triangle
 
@@ -121,6 +123,4 @@ command buffer recording.
 
 ## License
 
-MIT. The vendored `crater/data/vk.xml` is Copyright 2015-2026 The
-Khronos Group Inc. (SPDX: Apache-2.0 OR MIT), see
-`crater/data/VULKAN_REGISTRY_LICENSE`.
+MIT.

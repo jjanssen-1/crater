@@ -13,12 +13,16 @@ import sys
 from pathlib import Path
 
 from .generator import GenerationError, generate
-from .registry import Registry
+from .registry import Registry, RegistryNotFoundError
 from .spec import SpecError, parse_spec
 
 
 def _load_registry(args: argparse.Namespace) -> Registry:
-    return Registry(Path(args.registry)) if args.registry else Registry()
+    try:
+        return Registry(Path(args.registry)) if args.registry else Registry()
+    except RegistryNotFoundError as e:
+        print(f"crater: {e}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:

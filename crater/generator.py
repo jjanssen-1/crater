@@ -246,31 +246,32 @@ class ClassGenerator:
 
         lines: list[str] = [f"class {self.cd.name} {{", "public:"]
         lines.append(f"    explicit {self.cd.name}({param_list}){(' : ' + ', '.join(inits)) if inits else ''} {{")
-        body: list[str] = []
         for o in self.ordered_objects():
-            body.append("")
-            body.append(f"// {o.vulkan_name} '{o.instance_name}'")
-            body.extend(self._gen_object_creation(o))
-        lines += _indent(body)
+            lines.append("")
+            lines.append(f"        // {o.vulkan_name} '{o.instance_name}'")
+            lines.extend(_indent(self._gen_object_creation(o), 8))
         lines.append("    }")
         lines.append("")
         lines.append(f"    ~{self.cd.name}() {{")
-        dtor: list[str] = []
         for o in reversed(self.ordered_objects()):
-            dtor.extend(self._gen_object_destruction(o))
-        lines += _indent(dtor)
+            lines.append("")
+            lines.append(f"        // {o.vulkan_name} '{o.instance_name}'")
+            lines.extend(_indent(self._gen_object_destruction(o), 8))
         lines.append("    }")
         lines.append("")
         lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
         lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
         lines.append("")
+        lines.append("    // Vulkan handles created by this class")
         for o in self.ordered_objects():
             lines.append(f"    {o.binding.handle} {o.instance_name}{{}};")
         private_members = self._private_members()
         if private_members:
             lines.append("")
             lines.append("private:")
-            lines.extend(f"    {decl}" for decl in private_members)
+            for decl in private_members:
+                lines.append(f"    // saved for destruction")
+                lines.append(f"    {decl}")
         lines.append("};")
         return "\n".join(lines)
 
@@ -530,12 +531,11 @@ def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
         "#include <string>",
         "#include <vector>",
         "#include <vulkan/vulkan.h>",
-        "",
     ]
     for c in ordered:
+        out.append("")
         gen = ClassGenerator(c, registry, lookup)
         out.append(gen.generate())
-        out.append("")
     return "\n".join(out)
 
 

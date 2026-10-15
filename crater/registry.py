@@ -8,12 +8,53 @@ for specific Vulkan types.
 
 from __future__ import annotations
 
+import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-_REGISTRY_DATA = Path(__file__).parent / "data" / "vk.xml"
+_DEV_REGISTRY = Path(__file__).parent / "data" / "vk.xml"
+
+
+class RegistryNotFoundError(Exception):
+    """Raised when no Vulkan registry (vk.xml) could be located."""
+
+
+def find_registry() -> Path:
+    """Locate vk.xml.
+
+    Search order:
+
+    1. $CRATER_VK_XML
+    2. a gitignored dev copy at crater/data/vk.xml
+    3. the Vulkan SDK pointed to by $VULKAN_SDK (share/vulkan/registry,
+       registry, Config)
+    4. system locations (/usr/share/vulkan/registry, ...)
+    """
+    env = os.environ.get("CRATER_VK_XML")
+    if env and Path(env).is_file():
+        return Path(env)
+    if _DEV_REGISTRY.is_file():
+        return _DEV_REGISTRY
+    sdk = os.environ.get("VULKAN_SDK")
+    if sdk:
+        for rel in ("share/vulkan/registry/vk.xml", "registry/vk.xml", "Config/vk.xml"):
+            candidate = Path(sdk) / rel
+            if candidate.is_file():
+                return candidate
+    for candidate in (
+        Path("/usr/share/vulkan/registry/vk.xml"),
+        Path("/usr/local/share/vulkan/registry/vk.xml"),
+        Path("/usr/share/vkregistry/vk.xml"),
+    ):
+        if candidate.is_file():
+            return candidate
+    raise RegistryNotFoundError(
+        "could not find the Vulkan registry (vk.xml). Install the Vulkan "
+        "SDK (VULKAN_SDK), or pass --registry / set CRATER_VK_XML to a "
+        "vk.xml file."
+    )
 
 
 @dataclass
@@ -93,9 +134,11 @@ class CreateInfoBinding:
 
 
 class Registry:
-    def __init__(self, path: Path = _REGISTRY_DATA):
-        self.path = path
-        self._root = ET.parse(str(path)).getroot()
+    def __init__(self, path: Optional[Path] = None):
+        if path is None:
+            path = find_registry()
+        self.path = Path(path)
+        self._root = ET.parse(str(self.path)).getroot()
         self.structs: dict[str, Struct] = {}
         self.commands: dict[str, Command] = {}
         self.handles: set[str] = set()
