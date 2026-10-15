@@ -70,6 +70,13 @@ class StructValue:
 
 
 @dataclass
+class PNextChain:
+    """A pNext chain: an ordered list of extension structs."""
+
+    entries: list[tuple[str, "StructValue"]] = field(default_factory=list)
+
+
+@dataclass
 class ArrayValue:
     """An array of values (list in YAML)."""
 
@@ -142,6 +149,7 @@ class QueryDef:
     # member -> [constants]; ordering preference among require-matches
     prefer: dict[str, list[str]] = field(default_factory=dict)
     index: bool = False  # expose as_name + "Index" (uint32_t) as well
+    pnext: Optional[Any] = None  # PNextChain for query struct entries
 
 
 @dataclass
@@ -170,9 +178,21 @@ def _parse_value(value: Any) -> SpecValue:
             return Placeholder(name=m.group("name"), explicit_type=m.group("type"))
         return value
     if isinstance(value, dict):
+        # a single-key mapping whose key names a Vk* struct is a pNext entry
+        if len(value) == 1:
+            key = next(iter(value))
+            if isinstance(key, str) and key.startswith("Vk") and isinstance(value[key], dict):
+                return PNextChain(entries=[(key, StructValue(fields={k: _parse_value(v) for k, v in value[key].items()}))])
         return StructValue(fields={k: _parse_value(v) for k, v in value.items()})
     if isinstance(value, list):
-        return ArrayValue(items=[_parse_value(v) for v in value])
+        # a list of single-key Vk* mappings is a pNext chain
+        parsed = [_parse_value(v) for v in value]
+        if parsed and all(isinstance(p, PNextChain) and len(p.entries) == 1 for p in parsed):
+            entries = []
+            for p in parsed:
+                entries.extend(p.entries)
+            return PNextChain(entries=entries)
+        return ArrayValue(items=parsed)
     return value
 
 
@@ -289,7 +309,17 @@ def _query_def_from_entry(command_name: str, entry: Any, queries: dict, registry
         "require",
         "prefer",
         "index",
+        "pNext",
     }
+    if "pNext" in entry:
+        pnext = _parse_value(entry["pNext"])
+        if not isinstance(pnext, PNextChain):
+            raise SpecError(
+                f"class '{class_name}': 'pNext' must be a list of extension structs"
+            )
+        # expose the chain via the params dict so the generator sees it
+        entry = dict(entry)
+        entry["pNext"] = pnext
     if unknown:
         raise SpecError(
             f"class '{class_name}': unknown keys {sorted(unknown)} in query '{command_name}'"
@@ -298,6 +328,8 @@ def _query_def_from_entry(command_name: str, entry: Any, queries: dict, registry
         if qb.shape != "array":
             raise SpecError(f"class '{class_name}': 'index' needs an array query")
         qd.index = True
+    if "pNext" in entry and isinstance(entry["pNext"], PNextChain):
+        qd.pnext = entry["pNext"]
     if qb.shape == "present" and not qd.required and not qd.optional:
         raise SpecError(
             f"class '{class_name}': availability query '{command_name}' needs "
@@ -467,6 +499,12 @@ def _resolve_value_refs(value: Any, class_name: str, sibling_names: set[str], cl
         return value
     if isinstance(value, ArrayValue):
         value.items = [_resolve_value_refs(v, class_name, sibling_names, class_names) for v in value.items]
+        return value
+    if isinstance(value, PNextChain):
+        value.entries = [
+            (name, _resolve_value_refs(sv, class_name, sibling_names, class_names))
+            for name, sv in value.entries
+        ]
         return value
     return value
 

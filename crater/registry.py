@@ -78,6 +78,7 @@ class Struct:
     name: str
     members: list[Member] = field(default_factory=list)
     alias: Optional[str] = None
+    extends: list[str] = field(default_factory=list)  # structextends targets
 
     @property
     def resolved_name(self) -> str:
@@ -222,6 +223,9 @@ class Registry:
 
     def _parse_struct(self, node: ET.Element) -> Struct:
         s = Struct(name=node.get("name"), alias=node.get("alias"))
+        extends = node.get("structextends")
+        if extends:
+            s.extends = [e.strip() for e in extends.split(",")]
         if s.alias:
             return s
         for m in node.findall("member"):

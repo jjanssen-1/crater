@@ -24,6 +24,7 @@ from .spec import (
     CapabilitiesDef,
     ClassDef,
     ObjectDef,
+    PNextChain,
     Placeholder,
     QueryDef,
     Ref,
@@ -71,6 +72,37 @@ def _member_var_name(member_name: str) -> str:
         if member_name.startswith(prefix) and member_name[len(prefix) : len(prefix) + 1].isupper():
             return member_name[len(prefix)].lower() + member_name[len(prefix) + 1 :]
     return member_name
+
+
+def emit_pnext_chain(registry, class_name, locals_, chain, target, o, var, emit_struct) -> str:
+    """Emit a pNext chain of extension structs, registry-validated.
+
+    Each entry struct must appear in the target's structextends list
+    from vk.xml; the entries are emitted as locals with their sType set,
+    their members filled like any struct, and the chain wired via pNext
+    pointers. Returns the expression for the head pointer.
+    """
+    head = "nullptr"
+    prev = None
+    for i, (name, sv) in enumerate(chain.entries):
+        ext = registry.resolve_struct(name)
+        if ext is None:
+            raise GenerationError(
+                f"class '{class_name}': unknown pNext struct '{name}'"
+            )
+        if target.resolved_name not in ext.extends:
+            raise GenerationError(
+                f"class '{class_name}': '{name}' does not extend "
+                f"{target.resolved_name} (per the registry's structextends)"
+            )
+        ext_var = f"{var}_pNext{i}"
+        emit_struct(locals_, ext, sv.fields, ext_var, o)
+        if prev is None:
+            head = f"&{ext_var}"
+        else:
+            locals_.append(f"{prev}.pNext = &{ext_var};")
+        prev = ext_var
+    return head
 
 
 class CallGenerator:
@@ -342,6 +374,39 @@ class CapabilitiesGenerator:
         body = parts[0] + "".join(p.capitalize() for p in parts[1:])
         return "has" + body[0].upper() + body[1:]
 
+    def _emit_struct_for_query(self, locals_: list[str], struct: Struct, fields: dict, var: str, o) -> None:
+        """Emit a struct with the given fields (sType from the registry)."""
+        locals_.append(f"{struct.resolved_name} {var}{{}};")
+        stype = next((m.value for m in struct.members if m.value), None)
+        if stype:
+            locals_.append(f"{var}.sType = {stype};")
+        for key, value in fields.items():
+            member = next(
+                (m for m in struct.members if m.name == key or _member_var_name(m.name) == key),
+                None,
+            )
+            if member is None:
+                raise GenerationError(
+                    f"class '{self.cd.name}': '{key}' is not a member of "
+                    f"{struct.resolved_name}"
+                )
+            if isinstance(value, PNextChain):
+                head = emit_pnext_chain(self.registry, self.cd.name, locals_, value, struct, o, var, self._emit_struct_for_query)
+                locals_.append(f"{var}.{member.name} = {head};")
+                continue
+            if isinstance(value, bool):
+                expr = "VK_TRUE" if value else "VK_FALSE"
+            elif isinstance(value, float):
+                expr = f"{value}f"
+            elif isinstance(value, str):
+                expr = value
+            else:
+                expr = str(value)
+            if member.is_pointer and member.type != "void" and not member.is_const:
+                locals_.append(f"{var}.{member.name} = &{expr};")
+            else:
+                locals_.append(f"{var}.{member.name} = {expr};")
+
     def _gen_query(self, qd: QueryDef, params: list[tuple[str, str]]) -> list[str]:
         qb = qd.binding
         cmd = self.registry.resolve_command(qb.query_command)
@@ -391,6 +456,15 @@ class CapabilitiesGenerator:
             stype = next((m.value for m in out_struct.members if m.value), None) if out_struct else None
             if stype:
                 lines.append(f"{qd.as_name}.sType = {stype};")
+            if qd.pnext is not None and out_struct is not None:
+                fake_obj = ObjectDef(
+                    vulkan_name=qd.command_name,
+                    instance_name=qd.as_name,
+                    binding=None,
+                    params={},
+                )
+                head = emit_pnext_chain(self.registry, self.cd.name, lines, qd.pnext, out_struct, fake_obj, qd.as_name, self._emit_struct_for_query)
+                lines.append(f"{qd.as_name}.pNext = {head};")
             out_addr = f"&{qd.as_name}"
             call = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, out=out_addr))})"
             lines.append(self._vk_call(call, cmd, f"{qb.query_command} failed"))
@@ -884,9 +958,19 @@ class ClassGenerator:
             if expr is not None:
                 locals_.append(f"{var}.{member.name} = {expr};")
 
+    def _emit_pnext_chain(self, locals_: list[str], chain: PNextChain, target: Struct, o: ObjectDef, var: str) -> str:
+        return emit_pnext_chain(self.registry, self.cd.name, locals_, chain, target, o, var, self._emit_struct)
+
     def _emit_member_value(self, locals_: list[str], struct: Struct, member: Member, value, o: ObjectDef, var: str) -> Optional[str]:
         base = _member_var_name(member.name)
 
+        if isinstance(value, PNextChain):
+            if member.name != "pNext":
+                raise GenerationError(
+                    f"class '{self.cd.name}', object '{o.instance_name}': pNext "
+                    f"chains are only valid on the pNext member, not '{member.name}'"
+                )
+            return self._emit_pnext_chain(locals_, value, struct, o, var)
         if isinstance(value, Placeholder):
             return value.name
         if isinstance(value, Ref):
