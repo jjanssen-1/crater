@@ -89,3 +89,25 @@ enabled, no objects are created beyond the queries, nothing persistent.
 Platform-gated structs are skipped automatically (their headers are
 usually absent); promoted core structs are included per the device's
 API version.
+
+## pnext_showcase.py
+
+Chains **every struct that extends each emittable target** (CreateInfo
+or capability-query struct) and compile-checks the result - the static
+counterpart to pnext_explorer.py:
+
+- 56 targets, 916 registry-validated extender pairs
+- platform-gated extenders (63) are classified, not chained
+- Vulkan SC-only types are excluded (absent from normal headers)
+- types missing from the installed headers (registry/headers skew)
+  are classified and reported
+- compiles with VK_ENABLE_BETA_EXTENSIONS so beta structs chain too
+
+```bash
+python tools/pnext_showcase.py --out pnext_showcase.md
+# inspect generated specs and headers:
+python tools/pnext_showcase.py --run-specs /tmp/pnext-specs
+```
+
+Current sweep: **916/916 compile, 0 generation errors, 0 compile
+errors** across 56 targets.

@@ -173,6 +173,7 @@ class Registry:
         self.bitmask_bits: dict[str, str] = {}  # VkQueueFlags -> VkQueueFlagBits
         self._queries: Optional[dict[str, QueryBinding]] = None
         self._extension_of: dict[str, tuple[str, str]] = {}  # name -> (ext, platform)
+        self._sc_only: set[str] = set()
         self._parse()
         self._parse_extension_membership()
 
@@ -333,18 +334,41 @@ class Registry:
         return out
 
     def _parse_extension_membership(self) -> None:
-        """Map every extension-provided type/command to (extension, platform)."""
+        """Map every extension-provided type/command to (extension, platform).
+
+        Providers include extensions, core features, and the Vulkan SC
+        variant feature. A type provided only by the SC variant is
+        SC-only: absent from normal headers and not usable in specs.
+        """
         platforms = {}
         for node in self._root.findall("platforms/platform"):
             platforms[node.get("name")] = node.get("protect")
-        for ext in self._root.findall("extensions/extension"):
+        providers = list(self._root.findall("extensions/extension")) + list(self._root.findall("feature"))
+        providers_of: dict[str, list[str]] = {}  # name -> providing api names
+        for ext in providers:
             ext_name = ext.get("name")
+            # api attributes are comma-separated (e.g. "vulkan,vulkansc");
+            # extensions use 'supported' the same way
+            apis = (ext.get("api") or ext.get("supported") or "vulkan").split(",")
+            api = apis[0]
             protect = platforms.get(ext.get("platform"))
             for req in ext.findall("require"):
                 for item in list(req.findall("type")) + list(req.findall("command")) + list(req.findall("enum")):
                     name = item.get("name") or (item.find("name").text if item.find("name") is not None else None)
-                    if name and name not in self._extension_of:
-                        self._extension_of[name] = (ext_name, protect or "")
+                    if not name:
+                        continue
+                    providers_of.setdefault(name, []).extend(apis)
+                    if name not in self._extension_of or api == "vulkan":
+                        self._extension_of.setdefault(name, (ext_name, protect or ""))
+        self._sc_only = {
+            n for n, apis in providers_of.items() if apis and "vulkan" not in apis
+        }
+
+    def is_sc_only(self, name: str) -> bool:
+        """True if the type/command is provided only by the Vulkan SC
+        variant (or other non-vulkan api variants), i.e. absent from
+        normal headers."""
+        return name in self._sc_only
 
     def extension_of(self, name: str) -> Optional[tuple[str, str]]:
         """(extension name, platform protect) providing the given type or
@@ -465,20 +489,6 @@ class Registry:
             if p.type in self.handles and p.type != binding.handle and not p.is_pointer
         ]
         return cmd.name, parents
-
-    def _parse_extension_membership(self) -> None:
-        """Map every extension-provided type/command to (extension, platform)."""
-        platforms = {}
-        for node in self._root.findall("platforms/platform"):
-            platforms[node.get("name")] = node.get("protect")
-        for ext in self._root.findall("extensions/extension"):
-            ext_name = ext.get("name")
-            protect = platforms.get(ext.get("platform"))
-            for req in ext.findall("require"):
-                for item in list(req.findall("type")) + list(req.findall("command")) + list(req.findall("enum")):
-                    name = item.get("name") or (item.find("name").text if item.find("name") is not None else None)
-                    if name and name not in self._extension_of:
-                        self._extension_of[name] = (ext_name, protect or "")
 
     def extension_of(self, name: str) -> Optional[tuple[str, str]]:
         """(extension name, platform protect) providing the given type or
