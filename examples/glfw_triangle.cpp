@@ -12,9 +12,11 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <cstdio>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "glfw_triangle.hpp"
@@ -120,7 +122,29 @@ int main() {
     uint32_t glfwExtensionCount = 0;
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
-    VulkanInstance vulkanInstance(glfwExtensionCount, glfwExtensions);
+    // Enable the validation layer when it is installed (SDK). Enumerating
+    // layers is a runtime condition, so it stays imperative here.
+    std::vector<const char*> layers;
+    {
+        uint32_t count = 0;
+        vkEnumerateInstanceLayerProperties(&count, nullptr);
+        std::vector<VkLayerProperties> available(count);
+        vkEnumerateInstanceLayerProperties(&count, available.data());
+        for (const auto& layer : available) {
+            if (std::string_view(layer.layerName) == "VK_LAYER_KHRONOS_validation") {
+                layers.push_back("VK_LAYER_KHRONOS_validation");
+                break;
+            }
+        }
+    }
+    if (layers.empty()) {
+        std::fprintf(stderr, "note: VK_LAYER_KHRONOS_validation not found; \
+validation is disabled\n");
+    }
+
+    VulkanInstance vulkanInstance(
+        glfwExtensionCount, glfwExtensions,
+        static_cast<uint32_t>(layers.size()), layers.data());
 
     VkPhysicalDevice physicalDevice = pickPhysicalDevice(vulkanInstance.instance);
 
