@@ -12,6 +12,7 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <stdexcept>
@@ -58,7 +59,7 @@ struct FrameResources {
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
-    void create(VkDevice device, const TrianglePipeline& pipeline, const SurfaceCapabilities& capabilities, uint32_t queueFamilyIndex) {
+    void create(VkDevice device, const TrianglePipeline& pipeline, VkFormat pipelineFormat, VkExtent2D extent, uint32_t queueFamilyIndex) {
         uint32_t imageCount = 0;
         vkGetSwapchainImagesKHR(device, pipeline.swapchain, &imageCount, nullptr);
         images.resize(imageCount);
@@ -71,7 +72,7 @@ struct FrameResources {
             viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             viewInfo.image = images[i];
             viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            viewInfo.format = capabilities.surfaceFormat.format;
+            viewInfo.format = pipelineFormat;
             viewInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                    VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
             viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -83,8 +84,8 @@ struct FrameResources {
             fbInfo.renderPass = pipeline.renderPass;
             fbInfo.attachmentCount = 1;
             fbInfo.pAttachments = &views[i];
-            fbInfo.width = capabilities.surfaceCapabilities.currentExtent.width;
-            fbInfo.height = capabilities.surfaceCapabilities.currentExtent.height;
+            fbInfo.width = extent.width;
+            fbInfo.height = extent.height;
             fbInfo.layers = 1;
             if (vkCreateFramebuffer(device, &fbInfo, nullptr, &framebuffers[i]) != VK_SUCCESS)
                 throw std::runtime_error("vkCreateFramebuffer failed");
@@ -160,14 +161,33 @@ int main() {
     auto vertexShader = readFile("examples/generated/triangle.vert.spv");
     auto fragmentShader = readFile("examples/generated/triangle.frag.spv");
 
+    // The swapchain extent is an application choice: the queried
+    // currentExtent is 0xFFFFFFFF ("unknown") on Wayland, so clamp the
+    // window size into [minImageExtent, maxImageExtent] instead.
+    VkExtent2D swapchainExtent;
+    {
+        VkSurfaceCapabilitiesKHR caps = capabilities.surfaceCapabilities;
+        if (caps.currentExtent.width != 0xFFFFFFFFu) {
+            swapchainExtent = caps.currentExtent;
+        } else {
+            int fbWidth = 0, fbHeight = 0;
+            glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+            swapchainExtent.width = std::clamp(
+                static_cast<uint32_t>(fbWidth), caps.minImageExtent.width, caps.maxImageExtent.width);
+            swapchainExtent.height = std::clamp(
+                static_cast<uint32_t>(fbHeight), caps.minImageExtent.height, caps.maxImageExtent.height);
+        }
+    }
+
     // Creates shader modules, pipeline layout, render pass, graphics
     // pipeline, swapchain and synchronization objects; consumes the
-    // selected surface format/present mode/extent.
+    // selected surface format/present mode and the chosen extent.
     TrianglePipeline triangle(
         capabilities,
         device,
         vertexShader.size(), reinterpret_cast<const uint32_t*>(vertexShader.data()),
-        fragmentShader.size(), reinterpret_cast<const uint32_t*>(fragmentShader.data()));
+        fragmentShader.size(), reinterpret_cast<const uint32_t*>(fragmentShader.data()),
+        swapchainExtent);
 
     // Queues are retrieved, not created; the family index came from the
     // capability selection above.
@@ -175,7 +195,7 @@ int main() {
     vkGetDeviceQueue(device.device, deviceCapabilities.graphicsQueueFamilyIndex, 0, &graphicsQueue);
 
     FrameResources frames;
-    frames.create(device.device, triangle, capabilities, deviceCapabilities.graphicsQueueFamilyIndex);
+    frames.create(device.device, triangle, capabilities.surfaceFormat.format, swapchainExtent, deviceCapabilities.graphicsQueueFamilyIndex);
 
     // --- render loop: the imperative part stays imperative ----------------
     VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
@@ -194,17 +214,9 @@ int main() {
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(frames.commandBuffer, &beginInfo);
 
-        // viewport/scissor are dynamic pipeline states (see the yaml);
-        // currentExtent can be 0xFFFFFFFF (unknown) on Wayland, in which
-        // case the framebuffer size is used
-        uint32_t width = capabilities.surfaceCapabilities.currentExtent.width;
-        uint32_t height = capabilities.surfaceCapabilities.currentExtent.height;
-        if (width == 0xFFFFFFFFu || height == 0xFFFFFFFFu) {
-            int fbWidth = 0, fbHeight = 0;
-            glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-            width = static_cast<uint32_t>(fbWidth);
-            height = static_cast<uint32_t>(fbHeight);
-        }
+        // viewport/scissor are dynamic pipeline states (see the yaml)
+        uint32_t width = swapchainExtent.width;
+        uint32_t height = swapchainExtent.height;
         VkViewport viewport{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
         VkRect2D scissor{{0, 0}, {width, height}};
         vkCmdSetViewport(frames.commandBuffer, 0, 1, &viewport);
@@ -214,7 +226,7 @@ int main() {
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         renderPassInfo.renderPass = triangle.renderPass;
         renderPassInfo.framebuffer = frames.framebuffers[imageIndex];
-        renderPassInfo.renderArea.extent = capabilities.surfaceCapabilities.currentExtent;
+        renderPassInfo.renderArea.extent = swapchainExtent;
         renderPassInfo.clearValueCount = 1;
         renderPassInfo.pClearValues = &clearColor;
 
