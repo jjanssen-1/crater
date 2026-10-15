@@ -385,3 +385,53 @@ P:
     assert "graphicsPipelineCreateInfo_viewportState.viewportCount = 1;" in out
     assert "graphicsPipelineCreateInfo_viewportState.scissorCount = 1;" in out
     assert compile_generated(out, tmp_path)
+
+
+def test_multiple_selections_per_query(registry: Registry, tmp_path):
+    """Several selections against one query: a shared two-call fetch and
+    per-selection predicates (e.g. graphics AND transfer queue families)."""
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    - require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+      index: true
+      as: graphicsQueueFamily
+    - require: { queueFlags: VK_QUEUE_TRANSFER_BIT }
+      prefer: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+      index: true
+      as: transferQueueFamily
+""",
+        registry,
+    )
+    # ONE two-call fetch
+    assert out.count("vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice,") == 2
+    # both selections evaluated against the shared vector and count
+    assert out.count("vkGetPhysicalDeviceQueueFamilyProperties_options[i]") == 2
+    assert out.count("i < vkGetPhysicalDeviceQueueFamilyProperties_count") == 2
+    # separate results and indices
+    assert "graphicsQueueFamilyIndex = graphicsQueueFamilyBestIndex;" in out
+    assert "transferQueueFamilyIndex = transferQueueFamilyBestIndex;" in out
+    assert compile_generated(out, tmp_path)
+
+
+def test_duplicate_query_key_rejected(registry: Registry):
+    """The same query command as two mapping keys would silently
+    overwrite; the loader rejects it (use the list form instead)."""
+    with pytest.raises(Exception):
+        parse_spec(
+            """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+    as: a
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_TRANSFER_BIT }
+    as: b
+""",
+            registry,
+        )

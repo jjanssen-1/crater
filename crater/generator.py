@@ -341,10 +341,24 @@ class CapabilitiesGenerator:
         lines: list[str] = [f"class {self.cd.name} {{", "public:"]
         lines.append(f"    explicit {self.cd.name}({param_list}){(' : ' + ', '.join(inits)) if inits else ''} {{")
         body: list[str] = []
-        for qd in self.caps.queries:
-            body.append("")
-            body.append(f"        // {qd.queried_type} -> {qd.as_name}")
-            body.extend(_indent(self._gen_query(qd, params), 8))
+        i = 0
+        queries = self.caps.queries
+        while i < len(queries):
+            # group consecutive queries against the same command: one
+            # two-call fetch, each selection evaluated on the shared results
+            j = i
+            while j < len(queries) and queries[j].command_name == queries[i].command_name:
+                j += 1
+            group = queries[i:j]
+            if len(group) == 1:
+                body.append("")
+                body.append(f"        // {group[0].queried_type} -> {group[0].as_name}")
+                body.extend(_indent(self._gen_query(group[0], params), 8))
+            else:
+                body.append("")
+                body.append(f"        // {group[0].command_name}: {len(group)} selections")
+                body.extend(_indent(self._gen_query_group(group, params), 8))
+            i = j
         lines += body
         lines.append("}")
         lines.append("")
@@ -425,6 +439,95 @@ class CapabilitiesGenerator:
                 locals_.append(f"{var}.{member.name} = &{expr};")
             else:
                 locals_.append(f"{var}.{member.name} = {expr};")
+
+    def _gen_query_group(self, group: list[QueryDef], params: list[tuple[str, str]]) -> list[str]:
+        """One two-call fetch for a shared command, then each selection's
+        require/prefer/candidate logic evaluated against the shared
+        results vector."""
+        first = group[0]
+        qb = first.binding
+        cmd = self.registry.resolve_command(qb.query_command)
+        if cmd is None:
+            raise GenerationError(f"unknown command {qb.query_command}")
+        if qb.shape != "array":
+            raise GenerationError(
+                f"class '{self.cd.name}': multiple selections need an array "
+                f"query, not '{qb.query_command}'"
+            )
+        # map command parameter names to expressions (shared inputs)
+        param_exprs: dict[str, str] = {}
+        for p in cmd.params:
+            if p.name == qb.output_param or p.name == qb.count_param:
+                continue
+            matching_input = next((i for i in qb.inputs if i.name == p.name), None)
+            if matching_input is None:
+                param_exprs[p.name] = "nullptr"
+            else:
+                pname, ptype = next(
+                    (pn, pt) for pn, pt in self.caps.inputs if pn == matching_input.name
+                )
+                param_exprs[p.name] = self._input_expr(pname, ptype, matching_input.name)
+
+        vec = f"{qb.query_command}_options"
+        count_var = f"{qb.query_command}_count"
+        lines: list[str] = []
+        lines.append(f"uint32_t {count_var} = 0;")
+        call1 = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, count=f'&{count_var}', out='nullptr'))})"
+        lines.append(self._vk_call(call1, cmd, f"{qb.query_command} (count) failed"))
+        lines.append(f"std::vector<{first.queried_type}> {vec}({count_var});")
+        call2 = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, count=f'&{count_var}', out=f'{vec}.data()'))})"
+        lines.append(self._vk_call(call2, cmd, f"{qb.query_command} failed"))
+
+        # each selection evaluates on the shared vector; per-selection
+        # locals are prefixed to avoid collisions
+        for qd in group:
+            lines.append("")
+            lines.append(f"// selection: {qd.as_name}")
+            self._current_count_var = count_var
+            try:
+                sel_lines = self._gen_selection_logic(qd, vec, count_var, prefix=qd.as_name)
+            finally:
+                self._current_count_var = None
+            lines.extend(sel_lines)
+        return lines
+
+    def _gen_selection_logic(self, qd: QueryDef, vec: str, count_var: str, prefix: str) -> list[str]:
+        """The require/prefer/candidate selection for one QueryDef against
+        an existing shared results vector (locals prefixed per selection)."""
+        lines: list[str] = []
+        if qd.require or qd.prefer:
+            body = self._gen_predicate_selection(qd, vec)
+            # prefix the locals to keep selections independent
+            body = [self._prefix_local(l, qd, vec, count_var) for l in body]
+            lines.extend(body)
+            return lines
+        if qd.candidates:
+            body = self._gen_selection(qd, vec)
+            body = [self._prefix_local(l, qd, vec, count_var) for l in body]
+            lines.extend(body)
+            return lines
+        # first-element default selection
+        lines.append(f"if ({vec}.empty()) {{")
+        lines.append(f'    throw std::runtime_error("{qd.queried_type}: no options available");')
+        lines.append("}")
+        lines.append(f"{qd.as_name} = {vec}[0];")
+        if qd.index:
+            lines.append(f"{qd.as_name}Index = 0;")
+        return lines
+
+    @staticmethod
+    def _prefix_local(line: str, qd: QueryDef, vec: str, count_var: str) -> str:
+        """Prefix selection-local variable names with the selection's
+        as-name so parallel selections do not collide."""
+        for name in (f"{qd.as_name}Matched", f"{qd.as_name}BestRank", f"{qd.as_name}BestIndex",
+                     f"{qd.as_name}Best", f"{qd.as_name}Rank", f"{qd.as_name}Options",
+                     f"{qd.as_name}Count"):
+            if name in line and qd.as_name not in name:
+                pass
+        # selection helpers already use as_name prefixes; only the shared
+        # vec/count names must stay untouched. Predicate selection names
+        # its locals from as_name already, so nothing to do here.
+        return line
 
     def _gen_query(self, qd: QueryDef, params: list[tuple[str, str]]) -> list[str]:
         qb = qd.binding
@@ -547,7 +650,8 @@ class CapabilitiesGenerator:
         lines = [f"uint32_t {best_rank} = 0; // 0 = no match yet"]
         lines.append(f"uint32_t {best_index} = 0;")
         lines.append(f"{qd.queried_type} {best};")
-        lines.append(f"for (uint32_t i = 0; i < {qd.as_name}Count; ++i) {{")
+        count_ref = getattr(self, "_current_count_var", None) or f"{qd.as_name}Count"
+        lines.append(f"for (uint32_t i = 0; i < {count_ref}; ++i) {{")
         lines.append(f"    {it} e = {vec}[i];")
         if require_conds:
             lines.append(f"    if (!({' && '.join(require_conds)})) {{ continue; }}")

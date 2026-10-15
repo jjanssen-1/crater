@@ -34,6 +34,29 @@ PLACEHOLDER_RE = re.compile(r"^\{\{\s*(?:(?P<type>[A-Za-z_][\w:<> *,&]*)\s+)?(?P
 _PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{[^{}]*\}\}")
 
 
+class _DuplicateKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys (a duplicate
+    vkQuery: entry would otherwise silently overwrite the first)."""
+
+
+def _no_dup_construct_mapping(loader, node):
+    mapping = {}
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key '{key}' in mapping", key_node.start_mark
+            )
+        mapping[key] = None  # values constructed below via the normal path
+    # fall back to the standard constructor for values
+    return yaml.SafeLoader.construct_mapping(loader, node)
+
+
+_DuplicateKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_construct_mapping
+)
+
+
 class SpecError(Exception):
     pass
 
@@ -520,7 +543,7 @@ def spec_namespace() -> str | None:
 
 
 def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
-    data = yaml.safe_load(_quote_placeholders(text))
+    data = yaml.load(_quote_placeholders(text), Loader=_DuplicateKeyLoader)
     if data is None:
         return []
     if not isinstance(data, dict):
@@ -586,14 +609,26 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
         for command_name, entry in class_body.items():
             if command_name in queries:
                 cd.capabilities = cd.capabilities or CapabilitiesDef()
-                qd = _query_def_from_entry(command_name, entry, queries, registry, cd.name)
-                _validate_predicates(qd, registry, cd.name)
-                _validate_struct_required(qd, registry, cd.name)
-                if cd.capabilities.query(command_name) is not None:
+                selections = entry if isinstance(entry, list) else [entry]
+                if len(selections) > 1 and not isinstance(entry, list):
                     raise SpecError(
-                        f"class '{class_name}': duplicate query for '{command_name}'"
+                        f"class '{class_name}': query '{command_name}' used twice; "
+                        f"combine selections in a list instead"
                     )
-                cd.capabilities.queries.append(qd)
+                for sel in selections:
+                    qd = _query_def_from_entry(command_name, sel, queries, registry, cd.name)
+                    _validate_predicates(qd, registry, cd.name)
+                    _validate_struct_required(qd, registry, cd.name)
+                    if cd.capabilities.query(command_name) is not None and len(selections) == 1:
+                        raise SpecError(
+                            f"class '{class_name}': duplicate query for '{command_name}'"
+                        )
+                    if any(q.as_name == qd.as_name for q in cd.capabilities.queries):
+                        raise SpecError(
+                            f"class '{class_name}': duplicate result name "
+                            f"'{qd.as_name}' in capability queries"
+                        )
+                    cd.capabilities.queries.append(qd)
             elif (
                 command_name.startswith("vk")
                 and command_name in registry.commands

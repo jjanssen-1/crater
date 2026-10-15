@@ -200,9 +200,8 @@ TriangleFrame:
     name: swapchain
     imageExtent: {{ VkExtent2D extent }}
   VkSemaphore:
-    name: imageAvailable
-  VkSemaphore:
-    name: renderFinished
+    - name: imageAvailable
+    - name: renderFinished
   VkFence:
     name: inFlight
 """
