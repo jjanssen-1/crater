@@ -52,75 +52,60 @@ static VkPhysicalDevice pickPhysicalDevice(VkInstance instance) {
 // planned capability; for now this part stays explicit, like command
 // buffer recording.
 // ---------------------------------------------------------------------------
-struct FrameResources {
-    std::vector<VkImage> images;
-    std::vector<VkImageView> views;
-    std::vector<VkFramebuffer> framebuffers;
-    std::vector<VkSemaphore> renderFinished;  // one per swapchain image
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-
-    void create(VkDevice device, const TrianglePipeline& pipeline, VkFormat pipelineFormat, VkExtent2D extent, uint32_t queueFamilyIndex) {
+// ---------------------------------------------------------------------------
+// Per-swapchain-image resources: one SwapchainImageView and one
+// SwapchainFramebuffer per image (declared in glfw_triangle.yaml);
+// per-image render-finished semaphores. Only the loops over runtime
+// counts are code - the object creation is entirely generated.
+// ---------------------------------------------------------------------------
+class FrameResources {
+public:
+    explicit FrameResources(const VulkanDevice& device, const DeviceCapabilities& caps,
+                            VkSwapchainKHR swapchain, VkRenderPass renderPass,
+                            VkFormat format, VkExtent2D extent)
+        : commands(device, caps.graphicsQueueFamilyIndex), device_(device.device), deviceRef_(device) {
         uint32_t imageCount = 0;
-        vkGetSwapchainImagesKHR(device, pipeline.swapchain, &imageCount, nullptr);
-        images.resize(imageCount);
-        vkGetSwapchainImagesKHR(device, pipeline.swapchain, &imageCount, images.data());
+        vkGetSwapchainImagesKHR(device_, swapchain, &imageCount, nullptr);
+        std::vector<VkImage> images(imageCount);
+        vkGetSwapchainImagesKHR(device_, swapchain, &imageCount, images.data());
 
-        views.resize(imageCount);
-        framebuffers.resize(imageCount);
-        for (uint32_t i = 0; i < imageCount; ++i) {
-            VkImageViewCreateInfo viewInfo{};
-            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            viewInfo.image = images[i];
-            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            viewInfo.format = pipelineFormat;
-            viewInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                                   VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-            viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            if (vkCreateImageView(device, &viewInfo, nullptr, &views[i]) != VK_SUCCESS)
-                throw std::runtime_error("vkCreateImageView failed");
-
-            VkFramebufferCreateInfo fbInfo{};
-            fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            fbInfo.renderPass = pipeline.renderPass;
-            fbInfo.attachmentCount = 1;
-            fbInfo.pAttachments = &views[i];
-            fbInfo.width = extent.width;
-            fbInfo.height = extent.height;
-            fbInfo.layers = 1;
-            if (vkCreateFramebuffer(device, &fbInfo, nullptr, &framebuffers[i]) != VK_SUCCESS)
-                throw std::runtime_error("vkCreateFramebuffer failed");
-        }
-
-        renderFinished.resize(imageCount);
         for (uint32_t i = 0; i < imageCount; ++i) {
             VkSemaphoreCreateInfo semInfo{};
             semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            if (vkCreateSemaphore(device, &semInfo, nullptr, &renderFinished[i]) != VK_SUCCESS)
+            VkSemaphore sem = VK_NULL_HANDLE;
+            if (vkCreateSemaphore(device_, &semInfo, nullptr, &sem) != VK_SUCCESS)
                 throw std::runtime_error("vkCreateSemaphore failed");
+            renderFinished.push_back(sem);
+
+            views.emplace_back(deviceRef_, images[i], format);
+            VkImageView attachment = views[i].view;
+            framebuffers.emplace_back(
+                deviceRef_, renderPass, &attachment, extent.width, extent.height);
         }
-
-        VkCommandPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        poolInfo.queueFamilyIndex = queueFamilyIndex;
-        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
-            throw std::runtime_error("vkCreateCommandPool failed");
-
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = commandPool;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = 1;
-        vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
     }
 
-    void destroy(VkDevice device) {
-        for (auto fb : framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
-        for (auto view : views) vkDestroyImageView(device, view, nullptr);
-        for (auto sem : renderFinished) vkDestroySemaphore(device, sem, nullptr);
-        if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
+    FrameResources(const FrameResources&) = delete;
+    FrameResources& operator=(const FrameResources&) = delete;
+
+    VkCommandBuffer commandBuffer() const { return commands.commandBuffer; }
+    VkFramebuffer framebuffer(uint32_t imageIndex) const {
+        return framebuffers[imageIndex].framebuffer;
     }
+    VkSemaphore semaphore(uint32_t imageIndex) const { return renderFinished[imageIndex]; }
+
+    ~FrameResources() {
+        for (auto sem : renderFinished) {
+            if (sem != VK_NULL_HANDLE) vkDestroySemaphore(device_, sem, nullptr);
+        }
+    }
+
+private:
+    FrameCommands commands;
+    std::vector<SwapchainImageView> views;
+    std::vector<SwapchainFramebuffer> framebuffers;
+    std::vector<VkSemaphore> renderFinished;
+    VkDevice device_ = VK_NULL_HANDLE;
+    const VulkanDevice& deviceRef_;
 };
 
 int main() {
@@ -213,8 +198,11 @@ int main() {
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     vkGetDeviceQueue(device.device, deviceCapabilities.graphicsQueueFamilyIndex, 0, &graphicsQueue);
 
-    FrameResources frames;
-    frames.create(device.device, triangle, capabilities.surfaceFormat.format, swapchainExtent, deviceCapabilities.graphicsQueueFamilyIndex);
+    // one view + framebuffer per swapchain image, command pool + buffer,
+    // per-image semaphores - all declared in the yaml
+    FrameResources frames(device, deviceCapabilities, triangle.swapchain,
+                          triangle.renderPass, capabilities.surfaceFormat.format,
+                          swapchainExtent);
 
     // --- render loop: the imperative part stays imperative ----------------
     // alpha 0.0f instead of 1.0f keeps the clear compressible on GPUs
@@ -232,41 +220,42 @@ int main() {
             device.device, triangle.swapchain, triangle.imageAvailable,
             VK_NULL_HANDLE, imageIndex);
 
-        vkResetCommandBuffer(frames.commandBuffer, 0);
-        beginFrameCommandBuffer(frames.commandBuffer);
+        vkResetCommandBuffer(frames.commandBuffer(), 0);
+        beginFrameCommandBuffer(frames.commandBuffer());
 
         // viewport/scissor are dynamic pipeline states (see the yaml)
         uint32_t width = swapchainExtent.width;
         uint32_t height = swapchainExtent.height;
         VkViewport viewport{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
         VkRect2D scissor{{0, 0}, {width, height}};
-        vkCmdSetViewport(frames.commandBuffer, 0, 1, &viewport);
-        vkCmdSetScissor(frames.commandBuffer, 0, 1, &scissor);
+        vkCmdSetViewport(frames.commandBuffer(), 0, 1, &viewport);
+        vkCmdSetScissor(frames.commandBuffer(), 0, 1, &scissor);
 
         VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         renderPassInfo.renderPass = triangle.renderPass;
-        renderPassInfo.framebuffer = frames.framebuffers[imageIndex];
+        renderPassInfo.framebuffer = frames.framebuffer(imageIndex);
         renderPassInfo.renderArea.extent = swapchainExtent;
         renderPassInfo.clearValueCount = 1;
         renderPassInfo.pClearValues = &clearColor;
 
-        vkCmdBeginRenderPass(frames.commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(frames.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, triangle.pipeline);
-        vkCmdDraw(frames.commandBuffer, 3, 1, 0, 0);
-        vkCmdEndRenderPass(frames.commandBuffer);
-        endFrameCommandBuffer(frames.commandBuffer);
+        vkCmdBeginRenderPass(frames.commandBuffer(), &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(frames.commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, triangle.pipeline);
+        vkCmdDraw(frames.commandBuffer(), 3, 1, 0, 0);
+        vkCmdEndRenderPass(frames.commandBuffer());
+        endFrameCommandBuffer(frames.commandBuffer());
 
         VkSemaphore waitSemaphores[] = {triangle.imageAvailable};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkSemaphore signalSemaphores[] = {frames.renderFinished[imageIndex]};
+        VkSemaphore signalSemaphores[] = {frames.semaphore(imageIndex)};
+        VkCommandBuffer cmdBufRef = frames.commandBuffer();
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.waitSemaphoreCount = 1;
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &frames.commandBuffer;
+        submitInfo.pCommandBuffers = &cmdBufRef;
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
         if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, triangle.inFlight) != VK_SUCCESS)
@@ -283,8 +272,7 @@ int main() {
     }
 
         vkDeviceWaitIdle(device.device);
-        frames.destroy(device.device);
-    }  // swapchain destroyed here (before the surface)
+    }  // frames destroyed here (RAII), swapchain destroyed after (before the surface)
 
     // GLFW creates the surface but does not destroy it; it belongs to
     // the instance, so it must go before VulkanInstance destructs.

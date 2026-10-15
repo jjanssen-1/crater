@@ -853,6 +853,22 @@ class ClassGenerator:
         lines.append("")
         lines.append(f"    {self.cd.name}(const {self.cd.name}&) = delete;")
         lines.append(f"    {self.cd.name}& operator=(const {self.cd.name}&) = delete;")
+        # movable: transfers handle ownership; moved-from objects reset
+        # their handles so the destructor is a no-op (vector-compatible)
+        member_list = [o.instance_name for o in self.ordered_objects()]
+        lines.append(f"    {self.cd.name}({self.cd.name}&& other) noexcept {{")
+        for m in member_list:
+            lines.append(f"        {m} = other.{m};")
+            lines.append(f"        other.{m} = VK_NULL_HANDLE;")
+        lines.append("    }")
+        lines.append(f"    {self.cd.name}& operator=({self.cd.name}&& other) noexcept {{")
+        lines.append("        if (this != &other) {")
+        for m in member_list:
+            lines.append(f"            {m} = other.{m};")
+            lines.append(f"            other.{m} = VK_NULL_HANDLE;")
+        lines.append("        }")
+        lines.append("        return *this;")
+        lines.append("    }")
         lines.append("")
         lines.append("    // Vulkan handles created by this class")
         for o in self.ordered_objects():
@@ -994,7 +1010,9 @@ class ClassGenerator:
             return value.name
         if isinstance(value, Ref):
             expr = self._ref_expr(value, o, member)
-            if member.is_pointer and member.type in self.registry.structs:
+            if member.is_pointer and (
+                member.type in self.registry.structs or member.type in self.registry.handles
+            ):
                 return f"&{expr}"
             return expr
         if isinstance(value, StructValue) and (

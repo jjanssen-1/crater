@@ -147,6 +147,46 @@ TrianglePipeline:
     name: inFlight
     flags: VK_FENCE_CREATE_SIGNALED_BIT
 
+# One image view per swapchain image: an ordinary object class; the
+# image handle is a constructor parameter. main.cpp holds one instance
+# per swapchain image (the count is runtime-only, so the vector lives
+# there - the object creation itself is fully declarative).
+SwapchainImageView:
+  VkImageView:
+    name: view
+    image: {{ VkImage image }}
+    viewType: VK_IMAGE_VIEW_TYPE_2D
+    format: {{ VkFormat format }}
+    subresourceRange:
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT
+      levelCount: 1
+      layerCount: 1
+
+# One framebuffer per swapchain image; the render pass and the view's
+# handle are parameters (the view is created by SwapchainImageView).
+SwapchainFramebuffer:
+  VkFramebuffer:
+    name: framebuffer
+    renderPass: {{ VkRenderPass renderPass }}
+    attachments: {{ const VkImageView* attachment }}
+    width: {{ uint32_t width }}
+    height: {{ uint32_t height }}
+    layers: 1
+
+# Command pool + one primary command buffer per frame; allocation is
+# vkAllocateCommandBuffers (inferred from the registry like any
+# creation command).
+FrameCommands:
+  VkCommandPool:
+    name: commandPool
+    flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+    queueFamilyIndex: {{ uint32_t queueFamilyIndex }}
+  VkCommandBuffer:
+    name: commandBuffer
+    commandPool: commandPool
+    level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
+    commandBufferCount: 1
+
 # Plain command invocations: info structs hardcoded in YAML, remaining
 # values become function parameters. Free-standing, explicitly named
 # (never overshadowing the command they wrap).
