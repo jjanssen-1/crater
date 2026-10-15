@@ -20,7 +20,7 @@
 #include <string_view>
 #include <vector>
 
-#include "glfw_triangle.hpp"
+#include "generated/glfw_triangle.hpp"
 
 static std::vector<char> readFile(const char* path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);

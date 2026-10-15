@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "triangle.hpp"
+#include "generated/triangle.hpp"
 
 int main() {
     // In a real application these come from a window system binding and a
