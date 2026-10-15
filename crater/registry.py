@@ -114,13 +114,6 @@ class Command:
     alias: Optional[str] = None
 
 
-def _core_priority(name: str) -> int:
-    """Sort key preferring core/KHR commands over vendor extension variants."""
-    if name.endswith("KHR") or name.endswith("KHR2"):
-        return 0
-    return 1
-
-
 @dataclass
 class QueryBinding:
     """The inference result: how a capability can be queried.
@@ -176,6 +169,7 @@ class Registry:
         self.handles: set[str] = set()
         self.enums: dict[str, dict[str, str]] = {}  # enum type -> {name: value}
         self.bitmasks: dict[str, dict[str, str]] = {}
+        self.bitmask_bits: dict[str, str] = {}  # VkQueueFlags -> VkQueueFlagBits
         self._queries: Optional[dict[str, QueryBinding]] = None
         self._parse()
 
@@ -197,6 +191,10 @@ class Registry:
                 name_node = node.find("name")
                 if name_node is not None and name_node.text:
                     self.handles.add(name_node.text)
+            elif category == "bitmask":
+                nm = name or (node.find("name").text if node.find("name") is not None else None)
+                if nm:
+                    self.bitmask_bits[nm] = node.get("requires")
 
         for node in self._root.findall("commands/command"):
             cmd = self._parse_command(node)
@@ -328,6 +326,14 @@ class Registry:
                 out[name] = self.commands[alias]
         return out
 
+    def flag_bits_type(self, flags_type: str) -> Optional[str]:
+        """The *FlagBits enum backing a *Flags bitmask type, if any."""
+        return self.bitmask_bits.get(flags_type)
+
+    def flag_values(self, flag_bits_type: str) -> set[str]:
+        """Valid constant names of a *FlagBits enum."""
+        return set(self.bitmasks.get(flag_bits_type, {})) | set(self.enums.get(flag_bits_type, {}))
+
     # -------------------------------------------------------------- inference
 
     def bindings(self) -> dict[str, CreateInfoBinding]:
@@ -435,10 +441,18 @@ class Registry:
         ]
         return cmd.name, parents
 
+    def flag_bits_type(self, flags_type: str) -> Optional[str]:
+        """The *FlagBits enum backing a *Flags bitmask type, if any."""
+        return self.bitmask_bits.get(flags_type)
+
+    def flag_values(self, flag_bits_type: str) -> set[str]:
+        """Valid constant names of a *FlagBits enum."""
+        return set(self.bitmasks.get(flag_bits_type, {})) | set(self.enums.get(flag_bits_type, {}))
+
     # -------------------------------------------------------------- inference
 
     def queries(self) -> dict[str, QueryBinding]:
-        """Infer capability queries, keyed by the queried type.
+        """Infer capability queries, keyed by command name.
 
         A command is a query if its name starts with vkGet/vkEnumerate and it
         has output parameters but creates nothing. Recognition rules are
@@ -485,10 +499,7 @@ class Registry:
                     for x in cmd.params
                     if x is not array_param and x is not count_param and not x.is_const
                 ]
-                prev = queries.get(array_param.type)
-                if prev is not None and _core_priority(cmd.name) > _core_priority(prev.query_command):
-                    continue  # a more core command already provides this query
-                queries[array_param.type] = QueryBinding(
+                queries[cmd.name] = QueryBinding(
                     query_command=cmd.name,
                     shape="array",
                     item_type=array_param.type,
@@ -506,7 +517,7 @@ class Registry:
                 # optional const pointer (allocator-style), never a second output
                 if all((not x.is_pointer and not x.is_const) or x.is_const or x.type in self.handles for x in others):
                     inputs = [x for x in others if not x.is_const]
-                    queries[p.type] = QueryBinding(
+                    queries[cmd.name] = QueryBinding(
                         query_command=cmd.name,
                         shape="struct",
                         output_param=p.name,
@@ -515,10 +526,10 @@ class Registry:
                     )
 
         # present shape: array queries whose item struct carries a name member
-        for item_type, qb in list(queries.items()):
+        for cmd_name, qb in list(queries.items()):
             if qb.shape != "array":
                 continue
-            s = self.resolve_struct(item_type)
+            s = self.resolve_struct(qb.item_type) if qb.item_type else None
             if s is None:
                 continue
             name_member = next(
@@ -531,13 +542,13 @@ class Registry:
             )
             if name_member is None:
                 continue
-            queries[item_type] = QueryBinding(
+            queries[cmd_name] = QueryBinding(
                 query_command=qb.query_command,
                 shape="present",
-                item_type=item_type,
+                item_type=qb.item_type,
                 output_param=qb.output_param,
                 count_param=qb.count_param,
-                enumerated_type=item_type,
+                enumerated_type=qb.item_type,
                 name_member=name_member,
                 inputs=qb.inputs,
             )

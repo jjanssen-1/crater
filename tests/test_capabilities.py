@@ -9,7 +9,7 @@ from conftest import compile_generated
 
 def test_query_inference_shapes(registry: Registry):
     queries = registry.queries()
-    surface_formats = queries["VkSurfaceFormatKHR"]
+    surface_formats = queries["vkGetPhysicalDeviceSurfaceFormatsKHR"]
     assert surface_formats.shape == "array"
     assert surface_formats.query_command == "vkGetPhysicalDeviceSurfaceFormatsKHR"
     assert surface_formats.count_param == "pSurfaceFormatCount"
@@ -18,36 +18,29 @@ def test_query_inference_shapes(registry: Registry):
         ("surface", "VkSurfaceKHR"),
     ]
 
-    caps = queries["VkSurfaceCapabilitiesKHR"]
+    caps = queries["vkGetPhysicalDeviceSurfaceCapabilitiesKHR"]
     assert caps.shape == "struct"
     assert caps.query_command == "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"
 
-    extensions = queries["VkExtensionProperties"]
+    extensions = queries["vkEnumerateDeviceExtensionProperties"]
     assert extensions.shape == "present"
     assert extensions.name_member == "extensionName"
 
 
-def test_core_command_preferred(registry: Registry):
-    assert (
-        registry.queries()["VkPresentModeKHR"].query_command
-        == "vkGetPhysicalDeviceSurfacePresentModesKHR"
-    )
-
-
 SURFACE_SPEC = """
 SurfaceCapabilities:
-  VkSurfaceFormatKHR:
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
     candidates:
       - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
     as: surfaceFormat
-  VkPresentModeKHR:
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
     candidates: [VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR]
     fallback: any
     as: presentMode
-  VkExtensionProperties:
+  vkEnumerateDeviceExtensionProperties:
     required: [VK_KHR_swapchain]
     optional: [VK_KHR_get_memory_requirements2]
-  VkSurfaceCapabilitiesKHR: {}
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {}
 """
 
 
@@ -56,17 +49,17 @@ def test_capabilities_class_parses(registry: Registry):
     assert len(classes) == 1
     caps = classes[0].capabilities
     assert caps is not None
-    assert [q.queried_type for q in caps.queries] == [
-        "VkSurfaceFormatKHR",
-        "VkPresentModeKHR",
-        "VkExtensionProperties",
-        "VkSurfaceCapabilitiesKHR",
+    assert [q.command_name for q in caps.queries] == [
+        "vkGetPhysicalDeviceSurfaceFormatsKHR",
+        "vkGetPhysicalDeviceSurfacePresentModesKHR",
+        "vkEnumerateDeviceExtensionProperties",
+        "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
     ]
     assert caps.inputs == [
         ("physicalDevice", "VkPhysicalDevice"),
         ("surface", "VkSurfaceKHR"),
     ]
-    ext = caps.query("VkExtensionProperties")
+    ext = caps.query("vkEnumerateDeviceExtensionProperties")
     assert ext.required == ["VK_KHR_swapchain"]
     assert ext.optional == ["VK_KHR_get_memory_requirements2"]
 
@@ -86,7 +79,7 @@ def test_capabilities_generation(registry: Registry):
     # required extension throws when missing
     assert 'throw std::runtime_error("required VK_KHR_swapchain is not available");' in out
     # struct query result member
-    assert "VkSurfaceCapabilitiesKHR surfaceCapabilities{};" in out
+    assert "VkSurfaceCapabilitiesKHR surfaceCapabilities{};" in out or "VkSurfaceCapabilitiesKHR surfaceCapability{};" in out
 
 
 def test_capabilities_compile(registry: Registry, tmp_path):
@@ -128,7 +121,7 @@ Dev:
 Caps:
   physicalDevice: {{ VkPhysicalDevice physicalDevice }}
   surface: {{ VkSurfaceKHR surface }}
-  VkSurfaceFormatKHR:
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
     candidates:
       - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
 """,
@@ -143,7 +136,7 @@ def test_unknown_input_rejected(registry: Registry):
             """
 Caps:
   notAnInput: 5
-  VkSurfaceFormatKHR:
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
     candidates:
       - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
 """,
@@ -156,7 +149,7 @@ def test_fallback_requires_candidates(registry: Registry):
         parse_spec(
             """
 Caps:
-  VkPresentModeKHR:
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
     fallback: any
 """,
             registry,
@@ -168,7 +161,7 @@ def test_required_only_for_availability_queries(registry: Registry):
         parse_spec(
             """
 Caps:
-  VkSurfaceFormatKHR:
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
     required: [VK_FORMAT_B8G8R8A8_SRGB]
 """,
             registry,

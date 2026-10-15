@@ -113,6 +113,7 @@ class QueryDef:
     lists for name-carrying queries (extensions, layers).
     """
 
+    command_name: str
     queried_type: str
     binding: Any  # QueryBinding
     as_name: str  # member name exposing the result
@@ -120,6 +121,11 @@ class QueryDef:
     fallback_any: bool = False
     required: list = field(default_factory=list)
     optional: list = field(default_factory=list)
+    # member -> [constants]; element must satisfy ALL of these
+    require: dict[str, list[str]] = field(default_factory=dict)
+    # member -> [constants]; ordering preference among require-matches
+    prefer: dict[str, list[str]] = field(default_factory=dict)
+    index: bool = False  # expose as_name + "Index" (uint32_t) as well
 
 
 @dataclass
@@ -134,9 +140,9 @@ class CapabilitiesDef:
     queries: list[QueryDef] = field(default_factory=list)
     inputs: list[tuple[str, Any]] = field(default_factory=list)
 
-    def query(self, queried_type: str) -> Optional[QueryDef]:
+    def query(self, command_name: str) -> Optional[QueryDef]:
         for q in self.queries:
-            if q.queried_type == queried_type:
+            if q.command_name == command_name:
                 return q
         return None
 
@@ -189,19 +195,24 @@ def _objects_from_entry(vulkan_name: str, entry: Any, registry: Registry, bindin
     raise SpecError(f"entry for '{vulkan_name}' must be a mapping or list of mappings")
 
 
-def _query_def_from_entry(queried_type: str, entry: Any, queries: dict, class_name: str) -> QueryDef:
-    qb = queries[queried_type]
+def _query_def_from_entry(command_name: str, entry: Any, queries: dict, registry: Registry, class_name: str) -> QueryDef:
+    qb = queries[command_name]
     if entry is None:
         entry = {}
     if not isinstance(entry, dict):
-        raise SpecError(f"class '{class_name}': query '{queried_type}' must be a mapping")
-    as_name = entry.get("as") or _default_result_name(queried_type)
-    qd = QueryDef(queried_type=queried_type, binding=qb, as_name=as_name)
+        raise SpecError(f"class '{class_name}': query '{command_name}' must be a mapping")
+    as_name = entry.get("as") or _default_result_name(qb)
+    qd = QueryDef(
+        command_name=command_name,
+        queried_type=qb.item_type or qb.output_struct or "",
+        binding=qb,
+        as_name=as_name,
+    )
     candidates = entry.get("candidates")
     if candidates is not None:
         if qb.shape not in ("array", "struct"):
             raise SpecError(
-                f"class '{class_name}': query '{queried_type}' does not support candidates"
+                f"class '{class_name}': query '{command_name}' does not support candidates"
             )
         if isinstance(candidates, list) and candidates and isinstance(candidates[0], list):
             qd.candidates = [_parse_value(c) for c in candidates]  # list of rows (structs)
@@ -225,33 +236,96 @@ def _query_def_from_entry(queried_type: str, entry: Any, queries: dict, class_na
         if qb.shape != "present":
             raise SpecError(
                 f"class '{class_name}': '{key}' is only valid for availability "
-                f"queries (extensions/layers), not '{queried_type}'"
+                f"queries (extensions/layers), not '{command_name}'"
             )
         items = entry[key]
         if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
             raise SpecError(f"class '{class_name}': '{key}' must be a list of names")
         setattr(qd, key, items)
-    unknown = set(entry) - {"as", "candidates", "fallback", "required", "optional"}
+    for key in ("require", "prefer"):
+        if key not in entry:
+            continue
+        if qb.shape != "array":
+            raise SpecError(
+                f"class '{class_name}': '{key}' needs an array query, not '{command_name}'"
+            )
+        if not isinstance(entry[key], dict):
+            raise SpecError(f"class '{class_name}': '{key}' must be a mapping")
+        predicates = {}
+        for member, bits in entry[key].items():
+            if isinstance(bits, str):
+                bits = [bits]
+            if not isinstance(bits, list) or not all(isinstance(b, str) for b in bits):
+                raise SpecError(
+                    f"class '{class_name}': '{key}.{member}' must be a bit name or list of bit names"
+                )
+            predicates[member] = bits
+        setattr(qd, key, predicates)
+    unknown = set(entry) - {
+        "as",
+        "candidates",
+        "fallback",
+        "required",
+        "optional",
+        "require",
+        "prefer",
+        "index",
+    }
     if unknown:
         raise SpecError(
-            f"class '{class_name}': unknown keys {sorted(unknown)} in query '{queried_type}'"
+            f"class '{class_name}': unknown keys {sorted(unknown)} in query '{command_name}'"
         )
+    if entry.get("index"):
+        if qb.shape != "array":
+            raise SpecError(f"class '{class_name}': 'index' needs an array query")
+        qd.index = True
     if qb.shape == "present" and not qd.required and not qd.optional:
         raise SpecError(
-            f"class '{class_name}': availability query '{queried_type}' needs "
+            f"class '{class_name}': availability query '{command_name}' needs "
             f"'required' and/or 'optional'"
         )
     return qd
 
 
-def _default_result_name(queried_type: str) -> str:
-    base = queried_type[2:] if queried_type.startswith("Vk") else queried_type
-    for suffix in ("KHR", "EXT", "ARM"):
-        if base.endswith(suffix):
-            base = base[: -len(suffix)]
+def _validate_predicates(qd: QueryDef, registry: Registry, class_name: str) -> None:
+    """require/prefer members must exist on the item struct, and bit names
+    must be valid constants of the member's FlagBits enum."""
+    s = registry.resolve_struct(qd.queried_type) if qd.queried_type else None
+    if s is None:
+        return
+    for key in ("require", "prefer"):
+        for member, bits in getattr(qd, key).items():
+            m = s.member(member)
+            if m is None:
+                raise SpecError(
+                    f"class '{class_name}': '{qd.command_name}' items have no member "
+                    f"'{member}'"
+                )
+            flag_bits = registry.flag_bits_type(m.type)
+            valid = registry.flag_values(flag_bits) if flag_bits else set()
+            for b in bits:
+                if flag_bits and b not in valid:
+                    raise SpecError(
+                        f"class '{class_name}': '{b}' is not a valid value of "
+                        f"{flag_bits} (member '{member}' of {qd.command_name})"
+                    )
+                if not flag_bits and not b.replace("_", "").isalnum():
+                    raise SpecError(
+                        f"class '{class_name}': member '{member}' is not a bitmask; "
+                        f"only flag names are supported"
+                    )
+
+
+def _default_result_name(qb) -> str:
+    stem = qb.query_command
+    for prefix in ("vkEnumerateDevice", "vkEnumerateInstance", "vkEnumerate", "vkGetPhysicalDevice", "vkGet"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
             break
-    base = base[0].lower() + base[1:]
-    return base
+    if stem.endswith("KHR"):
+        stem = stem[:-3]
+    return stem[0].lower() + stem[1:]
+
 
 
 def _capability_inputs(
@@ -355,21 +429,22 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
         cd = ClassDef(name=class_name)
         is_capabilities = any(k in queries for k in class_body)
         declared_inputs: dict[str, Any] = {}
-        for vulkan_name, entry in class_body.items():
-            if vulkan_name in queries:
+        for command_name, entry in class_body.items():
+            if command_name in queries:
                 cd.capabilities = cd.capabilities or CapabilitiesDef()
-                qd = _query_def_from_entry(vulkan_name, entry, queries, cd.name)
-                if cd.capabilities.query(vulkan_name) is not None:
+                qd = _query_def_from_entry(command_name, entry, queries, registry, cd.name)
+                _validate_predicates(qd, registry, cd.name)
+                if cd.capabilities.query(command_name) is not None:
                     raise SpecError(
-                        f"class '{class_name}': duplicate query for '{vulkan_name}'"
+                        f"class '{class_name}': duplicate query for '{command_name}'"
                     )
                 cd.capabilities.queries.append(qd)
             elif is_capabilities:
                 # input declaration for the queries: a placeholder, a raw
                 # value, or a Class.object reference
-                declared_inputs[vulkan_name] = _parse_value(entry)
+                declared_inputs[command_name] = _parse_value(entry)
             else:
-                cd.objects.extend(_objects_from_entry(vulkan_name, entry, registry, bindings))
+                cd.objects.extend(_objects_from_entry(command_name, entry, registry, bindings))
         names = [o.instance_name for o in cd.objects]
         if len(names) != len(set(names)):
             raise SpecError(f"class '{class_name}' contains duplicate object names: {names}")
