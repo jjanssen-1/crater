@@ -1091,6 +1091,26 @@ class ClassGenerator:
         stype = next((m.value for m in struct.members if m.value), None)
         if stype:
             locals_.append(f"{var}.sType = {stype};")
+        # pointer-array members fed by a single Ref/Placeholder (or a
+        # plain expression) imply their count member = 1 unless the
+        # count is declared explicitly; declared arrays derive their
+        # own counts
+        derived_counts: dict[str, str] = {}
+        for key, value in fields.items():
+            member = self._match_member(struct, key)
+            if member is None or not member.is_pointer or not member.array_len:
+                continue
+            if not isinstance(value, (Placeholder, Ref, str)):
+                continue
+            # only derive a count when array_len names a real count
+            # member (null-terminated arrays have no count to set)
+            if member.array_len not in {m.name for m in struct.members}:
+                continue
+            if member.array_len in fields:
+                continue
+            derived_counts[member.array_len] = "1"
+        for count_member, expr in derived_counts.items():
+            locals_.append(f"{var}.{count_member} = {expr};")
         for key, value in fields.items():
             member = self._match_member(struct, key)
             if member is None:
