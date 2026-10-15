@@ -226,11 +226,26 @@ no Vulkan headers are found; set `VK_HEADERS_DIR` or install the
 
 ## Status
 
-Phase 1: object creation/destruction with full registry inference.
-Phase 2 (in progress): capability queries with preference-based
-selection and availability checks.
-Planned: window-system integration, physical device selection helpers,
-command buffer recording.
+Phase 1: object creation/destruction with full registry inference. ✔
+Phase 2: capability queries, availability checks, pNext chains, call
+functions, namespaces. ✔
+
+Validated:
+- full triangle with GLFW on real hardware, clean validation output,
+  clean teardown
+- 13/13 live object-creation tests on a real device (sync, memory,
+  images, views, samplers, descriptors, queries, command pools,
+  pipelines - graphics and compute)
+- pNext: 916/916 registry-legal extender pairs compile; live queries
+  chain the full registry (~400 structs) against a real driver with
+  zero errors; live chaining of every device-supported extension
+  struct works
+- 78/78 creation bindings compile (69 platform-independent + 9
+  correctly platform-classified)
+
+Planned: per-image object fan-out (framebuffers/views per swapchain
+image), swapchain recreation, generation-time warning mode (statically
+flag invalid zero-initialized defaults).
 
 ## License
 
