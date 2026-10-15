@@ -472,6 +472,7 @@ def _resolve_value_refs(value: Any, class_name: str, sibling_names: set[str], cl
 
 
 NAMESPACE_KEY = "namespace"
+FUNCTIONS_KEY = "functions"
 _SPEC_NAMESPACE = None
 
 
@@ -493,6 +494,36 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
     _SPEC_NAMESPACE = data.pop(NAMESPACE_KEY, None)
     if _SPEC_NAMESPACE is not None and not isinstance(_SPEC_NAMESPACE, str):
         raise SpecError("'namespace' must be a string")
+
+    # a top-level 'functions:' section: call functions without a class
+    functions_section = data.pop(FUNCTIONS_KEY, None)
+    functions_class = None
+    if functions_section is not None:
+        if not isinstance(functions_section, dict):
+            raise SpecError("'functions' must be a mapping of names to commands")
+        functions_class = ClassDef(name="functions")
+        for fname, entry in functions_section.items():
+            if not isinstance(entry, dict) or "command" not in entry:
+                raise SpecError(
+                    f"function '{fname}': expected a mapping with a 'command' key"
+                )
+            command_name = entry["command"]
+            if command_name not in registry.commands:
+                raise SpecError(f"function '{fname}': unknown command '{command_name}'")
+            if command_name in queries or command_name in bindings:
+                raise SpecError(
+                    f"function '{fname}': '{command_name}' is a query or creation "
+                    f"command; declare it in a class instead"
+                )
+            if fname == command_name:
+                raise SpecError(
+                    f"function '{fname}' must not overshadow the command it wraps"
+                )
+            params = {k: _parse_value(v) for k, v in entry.items() if k != "command"}
+            functions_class.calls.append(
+                CallDef(command_name=command_name, params=params, as_name=fname)
+            )
+
 
     classes: list[ClassDef] = []
     for class_name, class_body in data.items():
@@ -539,7 +570,18 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
                         f"class '{class_name}': call '{command_name}' must be a mapping"
                     )
                 entry = dict(entry)
-                as_name = entry.pop("as", None) or _default_call_name(command_name)
+                as_name = entry.pop("as", None)
+                if not as_name:
+                    raise SpecError(
+                        f"class '{class_name}': call '{command_name}' needs an "
+                        f"explicit name ('as:'); a call function must not "
+                        f"overshadow the command it wraps"
+                    )
+                if as_name == command_name:
+                    raise SpecError(
+                        f"class '{class_name}': call '{command_name}' name must "
+                        f"differ from the command it wraps"
+                    )
                 cd.calls.append(
                     CallDef(
                         command_name=command_name,
@@ -561,5 +603,7 @@ def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
         elif is_capabilities and not cd.capabilities and not cd.calls:
             raise SpecError(f"class '{class_name}': no queries declared")
         classes.append(cd)
+    if functions_class is not None:
+        classes.append(functions_class)
     _resolve_refs(classes)
     return classes

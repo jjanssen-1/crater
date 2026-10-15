@@ -148,14 +148,20 @@ TrianglePipeline:
     flags: VK_FENCE_CREATE_SIGNALED_BIT
 
 # Plain command invocations: info structs hardcoded in YAML, remaining
-# values are function parameters. Generated as static functions.
-FrameSync:
-  vkWaitForFences:
+# values become function parameters. Free-standing, explicitly named
+# (never overshadowing the command they wrap).
+functions:
+  waitFrameFence:
+    command: vkWaitForFences
     waitAll: true
     timeout: 1000000000
-  vkResetFences: {}
-  vkAcquireNextImageKHR:
+  resetFrameFence:
+    command: vkResetFences
+  acquireFrameImage:
+    command: vkAcquireNextImageKHR
     timeout: 1000000000
-  vkBeginCommandBuffer:
+  beginFrameCommandBuffer:
+    command: vkBeginCommandBuffer
     flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-  vkEndCommandBuffer: {}
+  endFrameCommandBuffer:
+    command: vkEndCommandBuffer

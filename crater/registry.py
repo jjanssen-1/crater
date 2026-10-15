@@ -171,7 +171,9 @@ class Registry:
         self.bitmasks: dict[str, dict[str, str]] = {}
         self.bitmask_bits: dict[str, str] = {}  # VkQueueFlags -> VkQueueFlagBits
         self._queries: Optional[dict[str, QueryBinding]] = None
+        self._extension_of: dict[str, tuple[str, str]] = {}  # name -> (ext, platform)
         self._parse()
+        self._parse_extension_membership()
 
     # ------------------------------------------------------------------ parse
 
@@ -326,6 +328,25 @@ class Registry:
                 out[name] = self.commands[alias]
         return out
 
+    def _parse_extension_membership(self) -> None:
+        """Map every extension-provided type/command to (extension, platform)."""
+        platforms = {}
+        for node in self._root.findall("platforms/platform"):
+            platforms[node.get("name")] = node.get("protect")
+        for ext in self._root.findall("extensions/extension"):
+            ext_name = ext.get("name")
+            protect = platforms.get(ext.get("platform"))
+            for req in ext.findall("require"):
+                for item in list(req.findall("type")) + list(req.findall("command")) + list(req.findall("enum")):
+                    name = item.get("name") or (item.find("name").text if item.find("name") is not None else None)
+                    if name and name not in self._extension_of:
+                        self._extension_of[name] = (ext_name, protect or "")
+
+    def extension_of(self, name: str) -> Optional[tuple[str, str]]:
+        """(extension name, platform protect) providing the given type or
+        command, if it comes from an extension."""
+        return self._extension_of.get(name)
+
     def flag_bits_type(self, flags_type: str) -> Optional[str]:
         """The *FlagBits enum backing a *Flags bitmask type, if any."""
         return self.bitmask_bits.get(flags_type)
@@ -440,6 +461,25 @@ class Registry:
             if p.type in self.handles and p.type != binding.handle and not p.is_pointer
         ]
         return cmd.name, parents
+
+    def _parse_extension_membership(self) -> None:
+        """Map every extension-provided type/command to (extension, platform)."""
+        platforms = {}
+        for node in self._root.findall("platforms/platform"):
+            platforms[node.get("name")] = node.get("protect")
+        for ext in self._root.findall("extensions/extension"):
+            ext_name = ext.get("name")
+            protect = platforms.get(ext.get("platform"))
+            for req in ext.findall("require"):
+                for item in list(req.findall("type")) + list(req.findall("command")) + list(req.findall("enum")):
+                    name = item.get("name") or (item.find("name").text if item.find("name") is not None else None)
+                    if name and name not in self._extension_of:
+                        self._extension_of[name] = (ext_name, protect or "")
+
+    def extension_of(self, name: str) -> Optional[tuple[str, str]]:
+        """(extension name, platform protect) providing the given type or
+        command, if it comes from an extension."""
+        return self._extension_of.get(name)
 
     def flag_bits_type(self, flags_type: str) -> Optional[str]:
         """The *FlagBits enum backing a *Flags bitmask type, if any."""
