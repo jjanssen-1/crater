@@ -83,12 +83,14 @@ int main() {
     vkGetPhysicalDeviceProperties(pd, &props);
     apiVersion = props.apiVersion;
 
+    std::printf("===PNEXT-JSON-BEGIN===\n");
     std::printf("{\n  \"api_version\": %u,\n", apiVersion);
     std::printf("  \"device_extensions\": [\n");
     for (uint32_t i = 0; i < deviceExtCount; ++i)
         std::printf("    \"%s\"%s\n", deviceExts[i].extensionName,
                     i + 1 < deviceExtCount ? "," : "");
     std::printf("  ]\n}\n");
+    std::printf("===PNEXT-JSON-END===\n");
     vkDestroyInstance(instance, nullptr);
     return 0;
 }
@@ -202,10 +204,18 @@ def main() -> int:
         if not build(probe_src, probe, [str(include)], ["-lvulkan"]):
             return 1
         print("pnext: probing device ...")
-        proc = subprocess.run([str(probe)], capture_output=True, text=True, timeout=60)
+        # validation layers print to stdout too; disable them for the
+        # probe (pure enumeration, nothing to validate) and slice the
+        # JSON between sentinels regardless
+        import os
+        env = dict(os.environ)
+        env["VK_LOADER_LAYERS_DISABLE"] = "*khronos_validation*"
+        proc = subprocess.run([str(probe)], capture_output=True, text=True, timeout=60, env=env)
         try:
-            device_info = json.loads(proc.stdout)
-        except json.JSONDecodeError:
+            begin = proc.stdout.index("===PNEXT-JSON-BEGIN===") + len("===PNEXT-JSON-BEGIN===")
+            end = proc.stdout.index("===PNEXT-JSON-END===")
+            device_info = json.loads(proc.stdout[begin:end])
+        except (ValueError, json.JSONDecodeError):
             print("pnext: probe failed:", proc.stdout, proc.stderr, file=sys.stderr)
             return 1
         if "error" in device_info:
