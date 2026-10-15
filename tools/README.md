@@ -128,3 +128,34 @@ python tools/pnext_showcase.py --live results.md --out pnext_showcase.md
 
 Strictly read-only: nothing is enabled, created, or written beyond the
 report. Platform-gated extenders are excluded automatically.
+
+## Troubleshooting: which crater am I running?
+
+Generated headers carry the generator's source hash in their first
+line, e.g. `gen 738ba0625aac`. If your header shows a different hash
+than the checkout, an older crater produced it. To find it:
+
+```bash
+which -a crater            # every crater on PATH, in order
+head -1 $(which crater)    # the shim's shebang: which python runs it
+type crater                # hashed path, alias, or shell function
+python3 -c "import crater, crater.generator, inspect; print(crater.__file__, inspect.getsourcefile(crater.generator._generator_hash))"
+pip list 2>/dev/null | grep -i crater   # which installs exist
+```
+
+The `crater.__file__` line is decisive: it prints the exact package the
+import resolves to. If it is not your checkout directory, that is the
+old copy.
+
+Fixes, in order of preference:
+
+```bash
+pip install -e .           # editable install: crater runs the repo code
+# or, if an old non-editable install shadows it:
+pip uninstall crater && pip install -e .
+# if the shell cached a moved/removed path:
+hash -r                   # bash; or: rehash (zsh)
+```
+
+After installing, verify with the header stamp: regenerate and check
+that `gen <hash>` matches the fresh checkout.
