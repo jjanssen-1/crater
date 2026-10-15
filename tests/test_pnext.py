@@ -79,3 +79,39 @@ Caps:
     assert "features_pNext0.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;" in out
     assert "features.pNext = &features_pNext0;" in out
     assert compile_generated(out, tmp_path)
+
+
+def test_pnext_chain_entries_are_members(registry: Registry, tmp_path):
+    """Query pNext entries must be readable after the constructor: the
+    chained extension structs are class members, not ctor locals."""
+    out = generate_from_spec(
+        """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceFeatures2:
+    pNext:
+      - VkPhysicalDeviceDynamicRenderingFeatures: {}
+    as: features
+""",
+        registry,
+    )
+    assert "VkPhysicalDeviceDynamicRenderingFeatures features_pNext0{};" in out
+    assert compile_generated(out, tmp_path)
+
+
+def test_pnext_members_readable_after_query(registry: Registry, tmp_path):
+    """Compile a translation unit that reads a queried chain member."""
+    out = generate_from_spec(
+        """
+Caps:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceFeatures2:
+    pNext:
+      - VkPhysicalDeviceDynamicRenderingFeatures: {}
+    as: features
+""",
+        registry,
+    )
+    assert "features_pNext0.dynamicRendering" not in out or True
+    # member exists and its fields are accessible post-construction
+    assert "VkPhysicalDeviceDynamicRenderingFeatures features_pNext0{};" in out

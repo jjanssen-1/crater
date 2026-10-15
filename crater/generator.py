@@ -74,13 +74,18 @@ def _member_var_name(member_name: str) -> str:
     return member_name
 
 
-def emit_pnext_chain(registry, class_name, locals_, chain, target, o, var, emit_struct) -> str:
+def emit_pnext_chain(registry, class_name, locals_, chain, target, o, var, emit_struct, members=None) -> str:
     """Emit a pNext chain of extension structs, registry-validated.
 
     Each entry struct must appear in the target's structextends list
-    from vk.xml; the entries are emitted as locals with their sType set,
-    their members filled like any struct, and the chain wired via pNext
+    from vk.xml; the entries are emitted with their sType set, their
+    members filled like any struct, and the chain wired via pNext
     pointers. Returns the expression for the head pointer.
+
+    When `members` is given (a list), the chain entries are declared as
+    members of that list instead of locals - for capability queries,
+    where the queried extension values must be readable after the
+    constructor ran.
     """
     head = "nullptr"
     prev = None
@@ -96,7 +101,16 @@ def emit_pnext_chain(registry, class_name, locals_, chain, target, o, var, emit_
                 f"{target.resolved_name} (per the registry's structextends)"
             )
         ext_var = f"{var}_pNext{i}"
-        emit_struct(locals_, ext, sv.fields, ext_var, o)
+        if members is not None:
+            members.append(f"{ext.resolved_name} {ext_var}{{}};")
+            body = []
+            emit_struct(body, ext, sv.fields, ext_var, o)
+            # drop the local re-declaration; keep the assignments
+            decl = f"{ext.resolved_name} {ext_var}{{}};"
+            body = [l for l in body if l != decl]
+            locals_.extend(body)
+        else:
+            emit_struct(locals_, ext, sv.fields, ext_var, o)
         if prev is None:
             head = f"&{ext_var}"
         else:
@@ -323,6 +337,7 @@ class CapabilitiesGenerator:
         params = self.ctor_params()
         param_list = ", ".join(f"{t} {n}" for t, n in params)
         inits = [f"{n}({n})" for _, n in params]
+        self._pnext_members: list[str] = []
         lines: list[str] = [f"class {self.cd.name} {{", "public:"]
         lines.append(f"    explicit {self.cd.name}({param_list}){(' : ' + ', '.join(inits)) if inits else ''} {{")
         body: list[str] = []
@@ -346,6 +361,10 @@ class CapabilitiesGenerator:
         lines.append("    // query results")
         for qd in self.caps.queries:
             lines.extend(f"    {decl}" for decl in self._result_members(qd))
+        if self._pnext_members:
+            lines.append("")
+            lines.append("    // pNext chain entries (queried extension values)")
+            lines.extend(f"    {decl}" for decl in self._pnext_members)
         lines.append("};")
         return "\n".join(lines)
 
@@ -463,7 +482,7 @@ class CapabilitiesGenerator:
                     binding=None,
                     params={},
                 )
-                head = emit_pnext_chain(self.registry, self.cd.name, lines, qd.pnext, out_struct, fake_obj, qd.as_name, self._emit_struct_for_query)
+                head = emit_pnext_chain(self.registry, self.cd.name, lines, qd.pnext, out_struct, fake_obj, qd.as_name, self._emit_struct_for_query, members=self._pnext_members)
                 lines.append(f"{qd.as_name}.pNext = {head};")
             out_addr = f"&{qd.as_name}"
             call = f"{qb.query_command}({', '.join(self._args(cmd, param_exprs, out=out_addr))})"
