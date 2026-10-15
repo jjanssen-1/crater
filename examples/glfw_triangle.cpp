@@ -70,12 +70,7 @@ public:
         vkGetSwapchainImagesKHR(device_, swapchain, &imageCount, images.data());
 
         for (uint32_t i = 0; i < imageCount; ++i) {
-            VkSemaphoreCreateInfo semInfo{};
-            semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            VkSemaphore sem = VK_NULL_HANDLE;
-            if (vkCreateSemaphore(device_, &semInfo, nullptr, &sem) != VK_SUCCESS)
-                throw std::runtime_error("vkCreateSemaphore failed");
-            renderFinished.push_back(sem);
+            renderFinished.emplace_back(deviceRef_);
 
             views.emplace_back(deviceRef_, images[i], format);
             VkImageView attachment = views[i].view;
@@ -91,19 +86,16 @@ public:
     VkFramebuffer framebuffer(uint32_t imageIndex) const {
         return framebuffers[imageIndex].framebuffer;
     }
-    VkSemaphore semaphore(uint32_t imageIndex) const { return renderFinished[imageIndex]; }
+    VkSemaphore semaphore(uint32_t imageIndex) const { return renderFinished[imageIndex].semaphore; }
 
-    ~FrameResources() {
-        for (auto sem : renderFinished) {
-            if (sem != VK_NULL_HANDLE) vkDestroySemaphore(device_, sem, nullptr);
-        }
-    }
+    // views, framebuffers and semaphores are RAII classes destroyed by
+    // their vectors; no manual cleanup
 
 private:
     FrameCommands commands;
     std::vector<SwapchainImageView> views;
     std::vector<SwapchainFramebuffer> framebuffers;
-    std::vector<VkSemaphore> renderFinished;
+    std::vector<RenderFinishedSemaphore> renderFinished;
     VkDevice device_ = VK_NULL_HANDLE;
     const VulkanDevice& deviceRef_;
 };

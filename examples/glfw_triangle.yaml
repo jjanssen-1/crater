@@ -173,6 +173,13 @@ SwapchainFramebuffer:
     height: {{ uint32_t height }}
     layers: 1
 
+# One render-finished semaphore per swapchain image (presentation holds
+# it until the image is re-acquired); main.cpp instantiates one per
+# image, and the destructor frees them - no manual cleanup.
+RenderFinishedSemaphore:
+  VkSemaphore:
+    name: semaphore
+
 # Command pool + one primary command buffer per frame; allocation is
 # vkAllocateCommandBuffers (inferred from the registry like any
 # creation command).
