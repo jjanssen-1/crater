@@ -351,6 +351,10 @@ int main() {
                              computeShader.size(), reinterpret_cast<const uint32_t*>(computeShader.data()),
                              renderPass.renderPass);
 
+    // swapchain-owning objects live in a nested scope: it closes (RAII
+    // destroy of the swapchain) before the surface is destroyed, which
+    // must precede the device/instance teardown
+    {
     QuadSwapchain swapchain(surfaceCaps, device, surface,
                             surfaceCaps.surfaceCapabilities.currentExtent.width != 0xFFFFFFFFu
                                 ? surfaceCaps.surfaceCapabilities.currentExtent
@@ -481,15 +485,19 @@ int main() {
         vkQueuePresentKHR(graphicsQueue, &pi);
     }
 
-    vkDeviceWaitIdle(device.device);
+        vkDeviceWaitIdle(device.device);
 
-    // raw allocations (not covered by generated classes): free them
-    // before the device dies
-    for (auto sem : renderFinished) vkDestroySemaphore(device.device, sem, nullptr);
-    for (auto m : geometryMemories) vkFreeMemory(device.device, m, nullptr);
-    vkFreeMemory(device.device, textureMemory, nullptr);
-    vkFreeMemory(device.device, stagingMemory, nullptr);
-    vkFreeMemory(device.device, uniformMemory, nullptr);
+        // raw allocations (not covered by generated classes): free them
+        // before the device dies
+        for (auto sem : renderFinished) vkDestroySemaphore(device.device, sem, nullptr);
+        for (auto m : geometryMemories) vkFreeMemory(device.device, m, nullptr);
+        vkFreeMemory(device.device, textureMemory, nullptr);
+        vkFreeMemory(device.device, stagingMemory, nullptr);
+        vkFreeMemory(device.device, uniformMemory, nullptr);
+    }  // swapchain (and per-image objects) destroyed here
+
+    // GLFW created the surface but does not destroy it; the swapchain is
+    // gone, so the surface can die before the instance
     vkDestroySurfaceKHR(instance.instance, surface, nullptr);
 
     }  // namespace-scoped RAII objects destroyed here, before GLFW
