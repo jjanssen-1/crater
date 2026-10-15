@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crater"
+version = "0.1.0"
+description = "Declarative Vulkan object generator: describe Vk objects in YAML, get RAII C++ classes."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+license = { text = "MIT" }
+
+[project.scripts]
+crater = "crater.cli:main"
+
+[tool.setuptools]
+packages = ["crater"]
+
+[tool.setuptools.package-data]
+crater = ["data/vk.xml", "data/VULKAN_REGISTRY_LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
