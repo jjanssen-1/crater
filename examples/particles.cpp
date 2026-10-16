@@ -167,21 +167,13 @@ int main() {
 
     FrameCommands commands(device, caps.graphicsQueueFamilyIndex);
     ParticlesSync sync(device);
-    // per-image render-finished semaphores: presentation holds them until
-    // the image is re-acquired (a single one would be re-signaled while
-    // still in use)
-    std::vector<VkSemaphore> renderFinished;
+    // per-image render-finished semaphores: declared in the yaml, RAII
+    std::vector<RenderFinishedSemaphore> renderFinished;
     {
         uint32_t imageCount = 0;
         vkGetSwapchainImagesKHR(device.device(), swapchain.swapchain(), &imageCount, nullptr);
-        for (uint32_t i = 0; i < imageCount; ++i) {
-            VkSemaphoreCreateInfo si{};
-            si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            VkSemaphore sem = VK_NULL_HANDLE;
-            if (vkCreateSemaphore(device.device(), &si, nullptr, &sem) != VK_SUCCESS)
-                throw std::runtime_error("vkCreateSemaphore failed");
-            renderFinished.push_back(sem);
-        }
+        for (uint32_t i = 0; i < imageCount; ++i)
+            renderFinished.emplace_back(device);
     }
 
     // descriptor writes: storage buffer (particles) + uniform (deltaTime)
@@ -296,7 +288,7 @@ int main() {
         vkCmdEndRenderPass(commands.renderCommandBuffer());
         endFrameCommandBuffer(commands.renderCommandBuffer());
 
-        VkSemaphore drawSignal[] = {renderFinished[imageIndex]};
+        VkSemaphore drawSignal[] = {renderFinished[imageIndex].semaphore()};
         VkPipelineStageFlags drawWaitStage[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         VkSubmitInfo drawSubmit{};
         drawSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -326,8 +318,7 @@ int main() {
     }
 
         vkDeviceWaitIdle(device.device());
-        for (auto sem : renderFinished) vkDestroySemaphore(device.device(), sem, nullptr);
-    }  // swapchain (and per-image views/framebuffers) destroyed here
+    }  // swapchain, per-image views/framebuffers and semaphores destroyed here
 
     // GLFW created the surface but does not destroy it; the swapchain is
     // gone, so it can die before the device/instance

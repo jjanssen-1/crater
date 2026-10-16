@@ -267,6 +267,13 @@ SwapchainFramebuffer:
     height: {{ uint32_t height }}
     layers: 1
 
+# One render-finished semaphore per swapchain image: presentation holds
+# it until the image is re-acquired; main.cpp instantiates one per image
+# and the RAII vector handles both creation and cleanup.
+RenderFinishedSemaphore:
+  VkSemaphore:
+    name: semaphore
+
 # Graphics-frame commands; the compute pass uses its own command buffer
 # per frame (declared here too so both live in one class).
 FrameCommands:
