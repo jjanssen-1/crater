@@ -813,7 +813,8 @@ class ClassGenerator:
         """Yield (struct, member, value, base_name) for every spec value of
         the object, descending into nested structs and arrays."""
         struct = self.registry.resolve_struct(o.binding.create_info_struct)
-        yield from self._walk_struct(struct, o.params, o, o.instance_name)
+        params = {k: v for k, v in o.params.items() if k != 'allocation'}
+        yield from self._walk_struct(struct, params, o, o.instance_name)
 
     def _walk_struct(self, struct: Optional[Struct], fields: dict, o: ObjectDef, base: str):
         if struct is None:
@@ -983,6 +984,10 @@ class ClassGenerator:
             lines.append(
                 f"    {o.binding.handle} {o.instance_name}() const {{ return {o.instance_name}_; }}"
             )
+            if getattr(o.binding, "extra_info_struct", None):
+                lines.append(
+                    f"    VmaAllocation {o.instance_name}Allocation() const {{ return {o.instance_name}Allocation_; }}"
+                )
         lines.append("")
         lines.append("    void destroyHandles() noexcept {")
         for o in reversed(self.ordered_objects()):
@@ -994,6 +999,9 @@ class ClassGenerator:
         lines.append("private:")
         for o in self.ordered_objects():
             lines.append(f"    {o.binding.handle} {o.instance_name}_{{}};")
+            extra_struct_name = getattr(o.binding, "extra_info_struct", None)
+            if extra_struct_name:
+                lines.append(f"    VmaAllocation {o.instance_name}Allocation_{{}};")
         private_members = self._private_members()
         if private_members:
             for decl in private_members:
@@ -1045,12 +1053,33 @@ class ClassGenerator:
         required_handles = set(self._required_handle_types(o))
         locals_: list[str] = []
         info_var = f"{o.instance_name}CreateInfo"
-        self._emit_struct(locals_, struct, o.params, info_var, o)
+        # VMA bindings carry a second CreateInfo (the allocation params)
+        # declared under the reserved 'allocation:' key
+        allocation_fields = o.params.get("allocation")
+        extra_struct_name = getattr(o.binding, "extra_info_struct", None)
+        if isinstance(allocation_fields, StructValue) and extra_struct_name:
+            extra_struct = self.registry.resolve_struct(extra_struct_name)
+            if extra_struct is None:
+                raise GenerationError(f"unknown struct {extra_struct_name}")
+            # 'allocation' is not a member of the primary CreateInfo
+            primary_params = {k: v for k, v in o.params.items() if k != "allocation"}
+            self._emit_struct(locals_, struct, primary_params, info_var, o)
+            extra_var = f"{o.instance_name}AllocationCreateInfo"
+            self._emit_struct(locals_, extra_struct, allocation_fields.fields, extra_var, o)
+        else:
+            self._emit_struct(locals_, struct, o.params, info_var, o)
 
+        extra_var = f"{o.instance_name}AllocationCreateInfo" if isinstance(allocation_fields, StructValue) else None
         call_args: list[str] = []
         for p in cmd.params:
             if p.name == o.binding.create_info_param:
                 call_args.append(f"&{info_var}")
+            elif extra_var is not None and p.name == "pAllocationCreateInfo":
+                call_args.append(f"&{extra_var}")
+            elif extra_var is not None and p.name == "pAllocation":
+                call_args.append(f"&{o.instance_name}Allocation_")
+            elif extra_var is not None and p.name == "pAllocationInfo":
+                call_args.append("nullptr")
             elif p.is_pointer and not p.is_const and p.type in self.registry.handles:
                 call_args.append(f"&{o.instance_name}_")
             elif p.type == "uint32_t" and p.len_value is not None and o.binding.plural:
@@ -1332,6 +1361,8 @@ class ClassGenerator:
         for p in cmd.params:
             if p.type == o.binding.handle and not p.is_pointer:
                 args.append(f"{o.instance_name}_")
+            elif p.name == "allocation" and p.type == "VmaAllocation":
+                args.append(f"{o.instance_name}Allocation_")
             elif p.type in self.registry.handles and not p.is_pointer:
                 sibling = self._sibling_for_handle(p.type)
                 if sibling is not None and sibling.instance_name != o.instance_name:
@@ -1457,6 +1488,9 @@ def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
     out: list[str] = (
         list(_RESULT_NAME_LINES[:_cut]) + _CRATER_HELPER_LINES[1:-3] + list(_RESULT_NAME_LINES[_cut:])
     )
+    if registry.vma_bindings_active():
+        vma_inc = _RESULT_NAME_LINES.index('#include <vulkan/vulkan.h>')
+        out.insert(vma_inc + 1, "#include <vk_mem_alloc.h>")
     out[0:1] = _stamp_lines(spec_classes)
     if ns:
         out.append(f"namespace {ns} {{")

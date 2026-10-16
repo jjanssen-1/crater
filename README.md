@@ -151,6 +151,41 @@ automatically adds the capabilities class as a constructor parameter:
 Extensions/layers are *not* auto-enabled: capabilities report and
 select, enabling stays explicit in the CreateInfos.
 
+### VMA (Vulkan Memory Allocator)
+
+Buffers and images with memory managed by
+[VMA](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
+are declared the same way as any other object - bindings, RAII, getters
+and all. `use_vma: true` loads the (hand-authored) VMA bindings into
+the registry; they carry the same shape as the vk.xml inference, so no
+generator code is special-cased:
+
+```yaml
+use_vma: true
+
+Allocator:
+  VmaAllocator:
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+    device: {{ VkDevice device }}
+
+VertexStaging:
+  VmaBuffer:
+    name: stagingBuffer
+    size: 65536
+    usage: VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+    allocation:              # the VmaAllocationCreateInfo
+      usage: VMA_MEMORY_USAGE_AUTO_PREFER_HOST
+      flags: VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
+```
+
+The generated class owns both handles (the VkBuffer and its
+VmaAllocation) and destroys them together; both are exposed as
+read-only getters. `VmaImage` works identically for images. The
+generated header includes `vk_mem_alloc.h`; the translation unit that
+should instantiate VMA defines `VMA_IMPLEMENTATION` before including
+it.
+
 ### Call functions
 
 Commands that are neither object creation nor capability queries can be

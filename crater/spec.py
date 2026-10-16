@@ -534,6 +534,7 @@ def _resolve_value_refs(value: Any, class_name: str, sibling_names: set[str], cl
 
 NAMESPACE_KEY = "namespace"
 FUNCTIONS_KEY = "functions"
+USE_VMA_KEY = "use_vma"
 _SPEC_NAMESPACE = None
 
 
@@ -544,6 +545,12 @@ def spec_namespace() -> str | None:
 
 def parse_spec(text: str, registry: Registry) -> list[ClassDef]:
     data = yaml.load(_quote_placeholders(text), Loader=_DuplicateKeyLoader)
+    if data is None:
+        return []
+    # an optional top-level 'use_vma: true' loads the Vulkan Memory
+    # Allocator bindings into the registry before parsing
+    if data.pop(USE_VMA_KEY, None):
+        registry.load_vma()
     if data is None:
         return []
     if not isinstance(data, dict):

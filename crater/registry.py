@@ -157,6 +157,10 @@ class CreateInfoBinding:
     # parameters of the create command the user may override (e.g. pAllocator)
     extra_params: list[Param] = field(default_factory=list)
     plural: bool = False  # vkCreateGraphicsPipelines creates an array of handles
+    # VMA bindings: a second CreateInfo (allocation params) and the
+    # co-produced allocation handle
+    extra_info_struct: Optional[str] = None
+    extra_output_handle: Optional[str] = None
 
 
 class Registry:
@@ -383,6 +387,89 @@ class Registry:
         """Valid constant names of a *FlagBits enum."""
         return set(self.bitmasks.get(flag_bits_type, {})) | set(self.enums.get(flag_bits_type, {}))
 
+    def load_vma(self) -> None:
+        """Inject the Vulkan Memory Allocator bindings (hand-authored in
+        crater/data/vma_bindings.py, same shapes as the vk.xml inference)
+        into the registry: handles, structs, commands and bindings.
+
+        After this call, VmaAllocator/VmaBuffer/VmaImage are creatable
+        like any Vulkan object, and the VMA calls are usable in the
+        functions: section.
+        """
+        from .data import vma_bindings as vb
+
+        self._vma_loaded = True
+
+        # handles
+        self.handles.update(["VmaAllocator", "VmaAllocation", "VmaPool"])
+
+        # structs
+        for name, info in vb.VMA_STRUCTS.items():
+            members = [
+                Member(
+                    name=n,
+                    type=t,
+                    is_pointer=ptr,
+                    is_const=c,
+                    optional=opt,
+                )
+                for (n, t, ptr, c, opt) in info["members"]
+            ]
+            self.structs[name] = Struct(name=name, members=members)
+
+        # commands
+        def _param(n, t, ptr=False, const=False):
+            return Param(name=n, type=t, is_pointer=ptr, is_const=const)
+
+        self.commands["vmaCreateAllocator"] = Command(
+            name="vmaCreateAllocator",
+            return_type="VkResult",
+            params=[
+                _param("pCreateInfo", "VmaAllocatorCreateInfo", True, True),
+                _param("pAllocator", "VmaAllocator", True),
+            ],
+            successcodes=["VK_SUCCESS"],
+        )
+        self.commands["vmaDestroyAllocator"] = Command(
+            name="vmaDestroyAllocator",
+            return_type="void",
+            params=[_param("allocator", "VmaAllocator")],
+        )
+        for key, b in vb.VMA_BINDINGS.items():
+            if key == "VmaAllocator":
+                continue
+            info = vb.VMA_STRUCTS.get(b["extra_info_struct"])
+            self.commands[b["create_command"]] = Command(
+                name=b["create_command"],
+                return_type="VkResult",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("pCreateInfo", b["create_info_struct"], True, True),
+                    _param("pAllocationCreateInfo", b["extra_info_struct"], True, True),
+                    _param("pBuffer" if key == "VmaBuffer" else "pImage", b["handle"], True),
+                    _param("pAllocation", b["extra_output_handle"], True),
+                    _param("pAllocationInfo", "VmaAllocationInfo", True),
+                ],
+                successcodes=["VK_SUCCESS"],
+            )
+            self.commands[b["destroy_command"]] = Command(
+                name=b["destroy_command"],
+                return_type="void",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("buffer" if key == "VmaBuffer" else "image", b["handle"]),
+                    _param("allocation", b["extra_output_handle"]),
+                ],
+            )
+
+        # bindings (the same dict the vk.xml inference fills)
+        for key, b in vb.VMA_BINDINGS.items():
+            self._vma_binding_overrides = getattr(self, "_vma_binding_overrides", {})
+            self._vma_binding_overrides[key] = b
+
+    def vma_bindings_active(self) -> bool:
+        return getattr(self, "_vma_binding_overrides", None) is not None
+
     # -------------------------------------------------------------- inference
 
     def bindings(self) -> dict[str, CreateInfoBinding]:
@@ -447,8 +534,24 @@ class Registry:
             binding.extra_params = extras
             bindings[key] = binding
 
-        # destroy inference
+        # VMA bindings (loaded via load_vma)
+        for key, b in getattr(self, "_vma_binding_overrides", {}).items():
+            bindings[key] = CreateInfoBinding(
+                handle=b["handle"],
+                create_command=b["create_command"],
+                create_info_struct=b["create_info_struct"],
+                create_info_param="pCreateInfo",
+                parent_handles=["allocator"],
+                destroy_command=b["destroy_command"],
+                destroy_parent_handles=["allocator"],
+                extra_info_struct=b.get("extra_info_struct"),
+                extra_output_handle=b.get("extra_output_handle"),
+            )
+
+        # destroy inference (skips bindings with an explicit destroy)
         for binding in bindings.values():
+            if binding.destroy_command is not None:
+                continue
             destroy = self._find_destroy(commands, binding)
             if destroy is not None:
                 name, parents = destroy
@@ -502,6 +605,89 @@ class Registry:
     def flag_values(self, flag_bits_type: str) -> set[str]:
         """Valid constant names of a *FlagBits enum."""
         return set(self.bitmasks.get(flag_bits_type, {})) | set(self.enums.get(flag_bits_type, {}))
+
+    def load_vma(self) -> None:
+        """Inject the Vulkan Memory Allocator bindings (hand-authored in
+        crater/data/vma_bindings.py, same shapes as the vk.xml inference)
+        into the registry: handles, structs, commands and bindings.
+
+        After this call, VmaAllocator/VmaBuffer/VmaImage are creatable
+        like any Vulkan object, and the VMA calls are usable in the
+        functions: section.
+        """
+        from .data import vma_bindings as vb
+
+        self._vma_loaded = True
+
+        # handles
+        self.handles.update(["VmaAllocator", "VmaAllocation", "VmaPool"])
+
+        # structs
+        for name, info in vb.VMA_STRUCTS.items():
+            members = [
+                Member(
+                    name=n,
+                    type=t,
+                    is_pointer=ptr,
+                    is_const=c,
+                    optional=opt,
+                )
+                for (n, t, ptr, c, opt) in info["members"]
+            ]
+            self.structs[name] = Struct(name=name, members=members)
+
+        # commands
+        def _param(n, t, ptr=False, const=False):
+            return Param(name=n, type=t, is_pointer=ptr, is_const=const)
+
+        self.commands["vmaCreateAllocator"] = Command(
+            name="vmaCreateAllocator",
+            return_type="VkResult",
+            params=[
+                _param("pCreateInfo", "VmaAllocatorCreateInfo", True, True),
+                _param("pAllocator", "VmaAllocator", True),
+            ],
+            successcodes=["VK_SUCCESS"],
+        )
+        self.commands["vmaDestroyAllocator"] = Command(
+            name="vmaDestroyAllocator",
+            return_type="void",
+            params=[_param("allocator", "VmaAllocator")],
+        )
+        for key, b in vb.VMA_BINDINGS.items():
+            if key == "VmaAllocator":
+                continue
+            info = vb.VMA_STRUCTS.get(b["extra_info_struct"])
+            self.commands[b["create_command"]] = Command(
+                name=b["create_command"],
+                return_type="VkResult",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("pCreateInfo", b["create_info_struct"], True, True),
+                    _param("pAllocationCreateInfo", b["extra_info_struct"], True, True),
+                    _param("pBuffer" if key == "VmaBuffer" else "pImage", b["handle"], True),
+                    _param("pAllocation", b["extra_output_handle"], True),
+                    _param("pAllocationInfo", "VmaAllocationInfo", True),
+                ],
+                successcodes=["VK_SUCCESS"],
+            )
+            self.commands[b["destroy_command"]] = Command(
+                name=b["destroy_command"],
+                return_type="void",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("buffer" if key == "VmaBuffer" else "image", b["handle"]),
+                    _param("allocation", b["extra_output_handle"]),
+                ],
+            )
+
+        # bindings (the same dict the vk.xml inference fills)
+        for key, b in vb.VMA_BINDINGS.items():
+            self._vma_binding_overrides = getattr(self, "_vma_binding_overrides", {})
+            self._vma_binding_overrides[key] = b
+
+    def vma_bindings_active(self) -> bool:
+        return getattr(self, "_vma_binding_overrides", None) is not None
 
     # -------------------------------------------------------------- inference
 
