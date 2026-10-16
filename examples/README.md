@@ -113,3 +113,27 @@ g++ -std=c++17 examples/quad.cpp -o quad \
 The imperative parts remain: memory binding (runtime memory type
 selection), uploads (one-time copy commands), descriptor writes,
 recording, and the render loop - everything declarable is in the yaml.
+
+## particles (VMA + compute example)
+
+A GPU particle simulation exercising the machinery the quad didn't:
+
+- **VMA**: the allocator as an ordinary object; buffers with persistent
+  host mappings (initial positions and per-frame uniforms are written
+  through `VmaAllocationInfo::pMappedData` - no vkMapMemory anywhere)
+- **a compute pipeline that is actually dispatched** each frame,
+  integrating 8192 particle positions in a storage buffer before the
+  graphics pass reads them (chained semaphores, separate command
+  buffers per pass)
+- timestamp queries, pNext feature chains on the device, a surface
+  format preference with a real fallback candidate
+- point-list rendering with the storage buffer as a vertex buffer
+
+```bash
+crater generate examples/particles.yaml -o examples/generated/particles.hpp
+glslc examples/shaders/particles.comp -o examples/generated/particles.comp.spv
+glslc examples/shaders/particles.vert -o examples/generated/particles.vert.spv
+glslc examples/shaders/particles.frag -o examples/generated/particles.frag.spv
+g++ -std=c++17 examples/particles.cpp -o particles \
+    -I examples -I $VULKAN_SDK/include -I <vma-headers> -lglfw -lvulkan
+./particles

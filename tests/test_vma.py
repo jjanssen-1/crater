@@ -95,3 +95,22 @@ B:
 """,
             registry,
         )
+
+
+def test_particles_example_generates(registry: Registry, tmp_path):
+    """The VMA particle example generates and compiles."""
+    from pathlib import Path
+
+    from conftest import compile_generated, generate_from_spec
+
+    spec = Path(__file__).parent.parent / "examples" / "particles.yaml"
+    out = generate_from_spec(spec.read_text(), registry)
+    # VMA: allocator + persistently-mapped buffers
+    assert "#include <vk_mem_alloc.h>" in out
+    assert "VMA_ALLOCATION_CREATE_MAPPED_BIT" in out
+    # pNext feature chain on the device
+    assert "deviceCreateInfo_pNext0.timelineSemaphore = VK_TRUE;" in out
+    # two command buffers in the FrameCommands class
+    assert "VkCommandBuffer renderCommandBuffer" in out
+    assert "VkCommandBuffer computeCommandBuffer" in out
+    assert compile_generated(out, tmp_path)

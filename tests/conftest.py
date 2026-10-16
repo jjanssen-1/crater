@@ -44,6 +44,21 @@ def find_vulkan_headers() -> Path | None:
     return None
 
 
+def find_vma_headers() -> Path | None:
+    """Locate vk_mem_alloc.h (VMA single header)."""
+    import os
+
+    env = os.environ.get("VMA_HEADERS_DIR")
+    if env and (Path(env) / "vk_mem_alloc.h").exists():
+        return Path(env)
+    for candidate in ("/usr/include", "/usr/local/include", "/tmp/vma/include"):
+        if Path(candidate, "vk_mem_alloc.h").exists():
+            # the include dir: for /usr/include the header IS in it; for
+            # /tmp/vma/include likewise - return the directory containing it
+            return Path(candidate)
+    return None
+
+
 def compile_generated(header: str, tmp_path: Path) -> bool:
     """Compile a translation unit that instantiates nothing but includes
     the generated header. Returns True on success."""
@@ -51,6 +66,12 @@ def compile_generated(header: str, tmp_path: Path) -> bool:
     if headers_dir is None:
         pytest.skip("Vulkan headers not available; skipping compile check")
     inc = headers_dir / "include" if (headers_dir / "include/vulkan/vulkan.h").exists() else headers_dir
+    extra_includes = []
+    if "vk_mem_alloc.h" in header:
+        vma_dir = find_vma_headers()
+        if vma_dir is None:
+            pytest.skip("VMA header not available; skipping compile check")
+        extra_includes.append(f"-I{vma_dir}")
     header_path = tmp_path / "generated.hpp"
     header_path.write_text(header)
     main = tmp_path / "main.cpp"
@@ -60,6 +81,7 @@ def compile_generated(header: str, tmp_path: Path) -> bool:
         "-std=c++17",
         f"-I{tmp_path}",
         f"-I{inc}",
+        *extra_includes,
         "-fsyntax-only",
         str(main),
     ]

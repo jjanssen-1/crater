@@ -105,7 +105,7 @@ VMA_CALLS = {
         "params": [
             ("allocator", "VmaAllocator", False, False),
             ("allocation", "VmaAllocation", False, False),
-            ("ppData", "void", True, False),
+            ("ppData", "void*", True, False),
         ],
         "return": "VkResult",
         "success": ["VK_SUCCESS"],

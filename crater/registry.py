@@ -462,6 +462,23 @@ class Registry:
                 ],
             )
 
+        # call functions (usable in the functions: section)
+        for name, call in vb.VMA_CALLS.items():
+            self.commands[name] = Command(
+                name=name,
+                return_type=call["return"],
+                params=[
+                    Param(
+                        name=n,
+                        type=t,
+                        is_pointer=ptr,
+                        is_const=c,
+                    )
+                    for (n, t, ptr, c) in call["params"]
+                ],
+                successcodes=call["success"],
+            )
+
         # bindings (the same dict the vk.xml inference fills)
         for key, b in vb.VMA_BINDINGS.items():
             self._vma_binding_overrides = getattr(self, "_vma_binding_overrides", {})
@@ -679,6 +696,23 @@ class Registry:
                     _param("buffer" if key == "VmaBuffer" else "image", b["handle"]),
                     _param("allocation", b["extra_output_handle"]),
                 ],
+            )
+
+        # call functions (usable in the functions: section)
+        for name, call in vb.VMA_CALLS.items():
+            self.commands[name] = Command(
+                name=name,
+                return_type=call["return"],
+                params=[
+                    Param(
+                        name=n,
+                        type=t,
+                        is_pointer=ptr,
+                        is_const=c,
+                    )
+                    for (n, t, ptr, c) in call["params"]
+                ],
+                successcodes=call["success"],
             )
 
         # bindings (the same dict the vk.xml inference fills)
