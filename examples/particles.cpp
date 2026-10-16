@@ -121,7 +121,7 @@ int main() {
             : VkExtent2D{900, 600};
 
     // VMA allocator: an ordinary object
-    ParticlesAllocator allocator(physicalDevice, device.device());
+    ParticlesAllocator allocator(physicalDevice, device.device(), instance.instance());
 
     // GPU buffers via VMA, persistently mapped
     ParticleBuffer particleBuffer(allocator, kBufferSize);

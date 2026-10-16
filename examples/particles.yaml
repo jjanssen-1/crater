@@ -74,6 +74,7 @@ ParticlesAllocator:
     name: allocator
     physicalDevice: {{ VkPhysicalDevice physicalDevice }}
     device: {{ VkDevice device }}
+    instance: {{ VkInstance instance }}
 
 # Particle positions: a storage buffer the compute shader updates and
 # the vertex shader reads. Persistently mapped - the initial positions

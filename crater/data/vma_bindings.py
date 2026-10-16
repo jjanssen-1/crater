@@ -28,7 +28,7 @@ VMA_STRUCTS = {
             ("pAllocationCallbacks", "VkAllocationCallbacks", True, True, True),
             ("pDeviceMemoryCallbacks", "VmaDeviceMemoryCallbacks", True, True, True),
             ("pHeapSizeLimit", "VkDeviceSize", True, False, True),
-            ("instance", "VkInstance", False, False, True),
+            ("instance", "VkInstance", False, False, False),
             ("vulkanApiVersion", "uint32_t", False, False, True),
         ],
         "stype": None,
