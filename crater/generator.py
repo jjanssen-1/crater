@@ -232,7 +232,7 @@ class CallGenerator:
             lines.append(f"    VkResult result__ = {call_expr};")
             lines.append(f"    if (!({checks})) {{")
             lines.append(
-                f'        throw std::runtime_error(std::string("{error}") + crater::result_name(result__) + ")");'
+                f'        throw crater::VulkanError(std::string("{error}") + crater::result_name(result__) + ")", result__);'
             )
             lines.append("    }")
             lines.append("    return result__;")
@@ -508,7 +508,7 @@ class CapabilitiesGenerator:
             return lines
         # first-element default selection
         lines.append(f"if ({vec}.empty()) {{")
-        lines.append(f'    throw std::runtime_error("{qd.queried_type}: no options available");')
+        lines.append(f'    throw crater::VulkanError("{qd.queried_type}: no options available");')
         lines.append("}")
         lines.append(f"{qd.as_name} = {vec}[0];")
         if qd.index:
@@ -567,7 +567,7 @@ class CapabilitiesGenerator:
                 lines.extend(self._gen_selection(qd, vec))
             else:
                 lines.append(f"if ({vec}.empty()) {{")
-                lines.append(f'    throw std::runtime_error("{qd.queried_type}: no options available");')
+                lines.append(f'    throw crater::VulkanError("{qd.queried_type}: no options available");')
                 lines.append("}")
                 lines.append(f"{qd.as_name} = {vec}[0];")
                 if qd.index:
@@ -593,7 +593,7 @@ class CapabilitiesGenerator:
             for path in qd.required:
                 lines.append(f"if ({qd.as_name}.{path} != VK_TRUE) {{")
                 error = f"{qb.query_command}: required capability {path} is not supported"
-                lines.append(f'    throw std::runtime_error("{error}");')
+                lines.append(f'    throw crater::VulkanError("{error}");')
                 lines.append("}")
             return lines
         # present
@@ -615,7 +615,7 @@ class CapabilitiesGenerator:
         for name in qd.required:
             flag = self._flag_name(name)
             lines.append(f"if (std::find_if({vec}.begin(), {vec}.end(), [&](const {qb.enumerated_type}& e) {{ return std::string_view(e.{qb.name_member}) == {self._string_literal(name)}; }}) == {vec}.end()) {{")
-            lines.append(f'    throw std::runtime_error("required {name} is not available");')
+            lines.append(f'    throw crater::VulkanError("required {name} is not available");')
             lines.append("}")
             lines.append(f"{flag} = true;")
             lines.append(f"{qd.as_name}.push_back({self._string_literal(name)});")
@@ -667,7 +667,7 @@ class CapabilitiesGenerator:
         lines.append("}")
         lines.append(f"if ({best_rank} == 0) {{")
         lines.append(
-            f'    throw std::runtime_error("no {qd.queried_type} satisfying the required capabilities");'
+            f'    throw crater::VulkanError("no {qd.queried_type} satisfying the required capabilities");'
         )
         lines.append("}")
         lines.append(f"{qd.as_name} = {best};")
@@ -719,7 +719,7 @@ class CapabilitiesGenerator:
             lines.append("}")
         else:
             lines.append(f"if (!{matched}) {{")
-            lines.append(f'    throw std::runtime_error("no acceptable {qd.queried_type} found");')
+            lines.append(f'    throw crater::VulkanError("no acceptable {qd.queried_type} found");')
             lines.append("}")
         return lines
 
@@ -742,7 +742,7 @@ class CapabilitiesGenerator:
         if cmd.return_type == "VkResult":
             return (
                 f"{{ VkResult result__ = {call}; "
-                f'if (result__ != VK_SUCCESS) {{ throw std::runtime_error(std::string("{error} (") + crater::result_name(result__) + ")"); }} }}'
+                f'if (result__ != VK_SUCCESS) {{ throw crater::VulkanError(std::string("{error} (") + crater::result_name(result__) + ")", result__); }} }}'
             )
         return f"{call};"
 
@@ -1073,7 +1073,7 @@ class ClassGenerator:
             lines.append(f"{{ VkResult result__ = {call};")
             lines.append(f"    if (result__ != VK_SUCCESS) {{")
             lines.append(
-                f'        throw std::runtime_error(std::string("{o.binding.create_command} failed (") + crater::result_name(result__) + ")");'
+                f'        throw crater::VulkanError(std::string("{o.binding.create_command} failed (") + crater::result_name(result__) + ")", result__);'
             )
             lines.append("    }")
             lines.append("}")
@@ -1372,6 +1372,27 @@ def _stamp_lines(spec_classes) -> list[str]:
     ]
 
 
+_CRATER_HELPER_LINES = [
+    "namespace crater {",
+    "",
+    "// thrown by all generated code when a Vulkan call fails or a",
+    "// required capability is not available",
+    "class VulkanError : public std::runtime_error {",
+    "public:",
+    "    explicit VulkanError(const std::string& message)",
+    "        : std::runtime_error(message), result_(VK_ERROR_UNKNOWN) {}",
+    "    VulkanError(const std::string& message, VkResult result)",
+    "        : std::runtime_error(message), result_(result) {}",
+    "    VkResult result() const noexcept { return result_; }",
+    "private:",
+    "    VkResult result_;",
+    "};",
+    "",
+    "}",
+    "",
+]
+
+
 _RESULT_NAME_LINES = [
     "// Generated by crater. Do not edit.",
     "#pragma once",
@@ -1429,7 +1450,13 @@ def generate(spec_classes: list[ClassDef], registry: Registry) -> str:
     lookup = {c.name: c for c in spec_classes}
     ordered = _order_classes(spec_classes, lookup)
     ns = spec_namespace()
-    out: list[str] = list(_RESULT_NAME_LINES)
+    # after the includes (up to and including <vulkan/vulkan.h> at index
+    # 12) and inside the guard + namespace: split at the namespace line
+    _NS_LINE = "namespace crater {"
+    _cut = _RESULT_NAME_LINES.index(_NS_LINE) + 1
+    out: list[str] = (
+        list(_RESULT_NAME_LINES[:_cut]) + _CRATER_HELPER_LINES[1:-3] + list(_RESULT_NAME_LINES[_cut:])
+    )
     out[0:1] = _stamp_lines(spec_classes)
     if ns:
         out.append(f"namespace {ns} {{")

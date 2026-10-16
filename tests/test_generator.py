@@ -249,3 +249,58 @@ P:
         "graphicsPipelineCreateInfo_viewportState_scissors_item0.extent = "
         "graphicsPipelineCreateInfo_viewportState_scissors_item0_extent;" in out
     )
+
+
+def test_vulkan_error_exception_type(registry: Registry, tmp_path):
+    """All generated throws use crater::VulkanError; VkResult failures
+    carry the result code, capability failures use VK_ERROR_UNKNOWN."""
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+T:
+  VkSemaphore:
+    name: sem
+""",
+        registry,
+    )
+    assert "class VulkanError : public std::runtime_error" in out
+    assert 'VulkanError(std::string("vkCreateSemaphore failed (")' in out
+    assert ", result__);" in out
+    assert compile_generated(out, tmp_path)
+
+
+def test_vulkan_error_catchable(registry: Registry, tmp_path):
+    """A translation unit catching crater::VulkanError specifically."""
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+T:
+  VkSemaphore:
+    name: sem
+""",
+        registry,
+    )
+    header = tmp_path / "generated.hpp"
+    header.write_text(out)
+    main = tmp_path / "main.cpp"
+    main.write_text(
+        '#include "generated.hpp"\n'
+        "int main() {\n"
+        "    try {\n"
+        "        T t(VK_NULL_HANDLE);\n"
+        "    } catch (const crater::VulkanError& e) {\n"
+        "        return e.result() == VK_ERROR_INITIALIZATION_FAILED ? 1 : 0;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    import subprocess
+
+    proc = subprocess.run(
+        ["g++", "-std=c++17", f"-I{tmp_path}", "-fsyntax-only", str(main)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr

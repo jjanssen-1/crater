@@ -77,7 +77,7 @@ def test_capabilities_generation(registry: Registry):
     # fallback: any
     assert "if (!presentModeMatched && !presentModeOptions.empty()) {" in out
     # required extension throws when missing
-    assert 'throw std::runtime_error("required VK_KHR_swapchain is not available");' in out
+    assert 'throw crater::VulkanError("required VK_KHR_swapchain is not available");' in out
     # struct query result member
     assert "VkSurfaceCapabilitiesKHR surfaceCapabilities{};" in out or "VkSurfaceCapabilitiesKHR surfaceCapability{};" in out
 
