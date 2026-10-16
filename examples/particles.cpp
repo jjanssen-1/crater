@@ -143,6 +143,10 @@ int main() {
         vertexShader.size(), reinterpret_cast<const uint32_t*>(vertexShader.data()),
         fragmentShader.size(), reinterpret_cast<const uint32_t*>(fragmentShader.data()));
 
+    // swapchain-owning objects live in a nested scope: it closes (RAII
+    // destroy of the swapchain and per-image objects) before the surface
+    // is destroyed, which must precede the device/instance teardown
+    {
     ParticlesSwapchain swapchain(surfaceCaps, device, surface, swapExtent);
 
     // per-image resources
@@ -321,12 +325,12 @@ int main() {
         if (++frame % 300 == 0) std::printf("frame %u\n", frame);
     }
 
-    vkDeviceWaitIdle(device.device());
-    for (auto sem : renderFinished) vkDestroySemaphore(device.device(), sem, nullptr);
+        vkDeviceWaitIdle(device.device());
+        for (auto sem : renderFinished) vkDestroySemaphore(device.device(), sem, nullptr);
+    }  // swapchain (and per-image views/framebuffers) destroyed here
 
-    // GLFW created the surface but does not destroy it; the swapchain and
-    // per-image objects are gone (RAII above), so it can die before the
-    // device/instance
+    // GLFW created the surface but does not destroy it; the swapchain is
+    // gone, so it can die before the device/instance
     vkDestroySurfaceKHR(instance.instance(), surface, nullptr);
 
     }  // RAII teardown (VMA buffers, pipelines, device, instance)
