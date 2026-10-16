@@ -159,3 +159,19 @@ hash -r                   # bash; or: rehash (zsh)
 
 After installing, verify with the header stamp: regenerate and check
 that `gen <hash>` matches the fresh checkout.
+
+## Static warnings
+
+`crater generate` prints static warnings for likely-invalid specs -
+problems the session's validation runs kept finding on real hardware:
+
+| check | origin |
+|---|---|
+| graphics pipeline missing a practically-required state (multisample, viewport, ...) | the null pMultisampleState crash |
+| viewport/scissor counts without arrays and without dynamic states | the viewport overflow crash |
+| non-optional enum members left at their zero default where 0 is not a valid value | the frontFace/priority class |
+| count members left at zero while their array pointer is set | the attachmentCount/setLayoutCount class |
+| pNext entries with invalid members | extended to chains |
+
+Warnings never block generation; they print to stderr with the class
+and object. The shipped examples are warning-free (tested).

@@ -296,12 +296,16 @@ T:
         "    return 0;\n"
         "}\n"
     )
-    import os
     import subprocess
 
-    include = os.environ.get("VK_HEADERS_DIR", "/usr/include")
+    from conftest import find_vulkan_headers
+
+    headers = find_vulkan_headers()
+    if headers is None:
+        pytest.skip("Vulkan headers not available")
+    inc = headers / "include" if (headers / "include/vulkan/vulkan.h").exists() else headers
     proc = subprocess.run(
-        ["g++", "-std=c++17", f"-I{tmp_path}", f"-I{include}", "-fsyntax-only", str(main)],
+        ["g++", "-std=c++17", f"-I{tmp_path}", f"-I{inc}", "-fsyntax-only", str(main)],
         capture_output=True,
         text=True,
     )

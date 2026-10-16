@@ -29,6 +29,10 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     registry = _load_registry(args)
     try:
         classes = parse_spec(Path(args.spec).read_text(), registry)
+        from .warnings import collect_warnings
+
+        for w in collect_warnings(classes, registry):
+            print(f"warning: {w.message}", file=sys.stderr)
         output = generate(classes, registry)
     except (SpecError, GenerationError) as e:
         print(f"crater: {e}", file=sys.stderr)
