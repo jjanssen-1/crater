@@ -63,7 +63,7 @@ public:
     explicit FrameResources(const VulkanDevice& device, const DeviceCapabilities& caps,
                             VkSwapchainKHR swapchain, VkRenderPass renderPass,
                             VkFormat format, VkExtent2D extent)
-        : commands(device, caps.graphicsQueueFamilyIndex), device_(device.device), deviceRef_(device) {
+        : commands(device, caps.graphicsQueueFamilyIndex), device_(device.device()), deviceRef_(device) {
         uint32_t imageCount = 0;
         vkGetSwapchainImagesKHR(device_, swapchain, &imageCount, nullptr);
         std::vector<VkImage> images(imageCount);
@@ -73,7 +73,7 @@ public:
             renderFinished.emplace_back(deviceRef_);
 
             views.emplace_back(deviceRef_, images[i], format);
-            VkImageView attachment = views[i].view;
+            VkImageView attachment = views[i].view();
             framebuffers.emplace_back(
                 deviceRef_, renderPass, &attachment, extent.width, extent.height);
         }
@@ -82,11 +82,11 @@ public:
     FrameResources(const FrameResources&) = delete;
     FrameResources& operator=(const FrameResources&) = delete;
 
-    VkCommandBuffer commandBuffer() const { return commands.commandBuffer; }
+    VkCommandBuffer commandBuffer() const { return commands.commandBuffer(); }
     VkFramebuffer framebuffer(uint32_t imageIndex) const {
-        return framebuffers[imageIndex].framebuffer;
+        return framebuffers[imageIndex].framebuffer();
     }
-    VkSemaphore semaphore(uint32_t imageIndex) const { return renderFinished[imageIndex].semaphore; }
+    VkSemaphore semaphore(uint32_t imageIndex) const { return renderFinished[imageIndex].semaphore(); }
 
     // views, framebuffers and semaphores are RAII classes destroyed by
     // their vectors; no manual cleanup
@@ -132,7 +132,7 @@ int main() {
 
     VulkanInstance vulkanInstance(layers, glfwExtensionCount, glfwExtensions);
 
-    VkPhysicalDevice physicalDevice = pickPhysicalDevice(vulkanInstance.instance);
+    VkPhysicalDevice physicalDevice = pickPhysicalDevice(vulkanInstance.instance());
 
     // Selects a queue family (graphics required, compute preferred) and
     // requires samplerAnisotropy. All per glfw_triangle.yaml.
@@ -144,7 +144,7 @@ int main() {
 
     // The surface itself is platform specific; GLFW creates it.
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (glfwCreateWindowSurface(vulkanInstance.instance, window, nullptr, &surface) != VK_SUCCESS)
+    if (glfwCreateWindowSurface(vulkanInstance.instance(), window, nullptr, &surface) != VK_SUCCESS)
         throw std::runtime_error("glfwCreateWindowSurface failed");
 
     // Queries formats/present modes/capabilities and selects per the
@@ -188,12 +188,12 @@ int main() {
     // Queues are retrieved, not created; the family index came from the
     // capability selection above.
     VkQueue graphicsQueue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(device.device, deviceCapabilities.graphicsQueueFamilyIndex, 0, &graphicsQueue);
+    vkGetDeviceQueue(device.device(), deviceCapabilities.graphicsQueueFamilyIndex, 0, &graphicsQueue);
 
     // one view + framebuffer per swapchain image, command pool + buffer,
     // per-image semaphores - all declared in the yaml
-    FrameResources frames(device, deviceCapabilities, triangle.swapchain,
-                          triangle.renderPass, capabilities.surfaceFormat.format,
+    FrameResources frames(device, deviceCapabilities, triangle.swapchain(),
+                          triangle.renderPass(), capabilities.surfaceFormat.format,
                           swapchainExtent);
 
     // --- render loop: the imperative part stays imperative ----------------
@@ -204,12 +204,13 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        waitFrameFence(device.device, 1, &triangle.inFlight);
-        resetFrameFence(device.device, 1, &triangle.inFlight);
+        VkFence frameFence = triangle.inFlight();
+        waitFrameFence(device.device(), 1, &frameFence);
+        resetFrameFence(device.device(), 1, &frameFence);
 
         uint32_t imageIndex = 0;
         acquireFrameImage(
-            device.device, triangle.swapchain, triangle.imageAvailable,
+            device.device(), triangle.swapchain(), triangle.imageAvailable(),
             VK_NULL_HANDLE, imageIndex);
 
         vkResetCommandBuffer(frames.commandBuffer(), 0);
@@ -225,19 +226,19 @@ int main() {
 
         VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = triangle.renderPass;
+        renderPassInfo.renderPass = triangle.renderPass();
         renderPassInfo.framebuffer = frames.framebuffer(imageIndex);
         renderPassInfo.renderArea.extent = swapchainExtent;
         renderPassInfo.clearValueCount = 1;
         renderPassInfo.pClearValues = &clearColor;
 
         vkCmdBeginRenderPass(frames.commandBuffer(), &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(frames.commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, triangle.pipeline);
+        vkCmdBindPipeline(frames.commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, triangle.pipeline());
         vkCmdDraw(frames.commandBuffer(), 3, 1, 0, 0);
         vkCmdEndRenderPass(frames.commandBuffer());
         endFrameCommandBuffer(frames.commandBuffer());
 
-        VkSemaphore waitSemaphores[] = {triangle.imageAvailable};
+        VkSemaphore waitSemaphores[] = {triangle.imageAvailable()};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         VkSemaphore signalSemaphores[] = {frames.semaphore(imageIndex)};
         VkCommandBuffer cmdBufRef = frames.commandBuffer();
@@ -250,7 +251,7 @@ int main() {
         submitInfo.pCommandBuffers = &cmdBufRef;
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, triangle.inFlight) != VK_SUCCESS)
+        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, frameFence) != VK_SUCCESS)
             throw std::runtime_error("vkQueueSubmit failed");
 
         VkPresentInfoKHR presentInfo{};
@@ -258,17 +259,18 @@ int main() {
         presentInfo.waitSemaphoreCount = 1;
         presentInfo.pWaitSemaphores = signalSemaphores;
         presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &triangle.swapchain;
+        VkSwapchainKHR swapchainHandle = triangle.swapchain();
+        presentInfo.pSwapchains = &swapchainHandle;
         presentInfo.pImageIndices = &imageIndex;
         vkQueuePresentKHR(graphicsQueue, &presentInfo);
     }
 
-        vkDeviceWaitIdle(device.device);
+        vkDeviceWaitIdle(device.device());
     }  // frames destroyed here (RAII), swapchain destroyed after (before the surface)
 
     // GLFW creates the surface but does not destroy it; it belongs to
     // the instance, so it must go before VulkanInstance destructs.
-    vkDestroySurfaceKHR(vulkanInstance.instance, surface, nullptr);
+    vkDestroySurfaceKHR(vulkanInstance.instance(), surface, nullptr);
     }  // Vulkan objects are destroyed here
 
     glfwDestroyWindow(window);

@@ -955,7 +955,7 @@ class ClassGenerator:
         # movable: transfers handle ownership (and the saved parent
         # handles); moved-from objects reset their handles so the
         # destructor is a no-op (vector-compatible)
-        member_list = [o.instance_name for o in self.ordered_objects()]
+        member_list = [f"{o.instance_name}_" for o in self.ordered_objects()]
         saved_list = [
             f"{_lower_first(h)}_" for h in self._needed_saved_handles()
         ]
@@ -976,9 +976,13 @@ class ClassGenerator:
         lines.append("        return *this;")
         lines.append("    }")
         lines.append("")
-        lines.append("    // Vulkan handles created by this class")
+        # public read-only accessors; the handles themselves are private
+        # so they cannot be reassigned (which would break RAII)
+        lines.append("    // read-only access to the created handles")
         for o in self.ordered_objects():
-            lines.append(f"    {o.binding.handle} {o.instance_name}{{}};")
+            lines.append(
+                f"    {o.binding.handle} {o.instance_name}() const {{ return {o.instance_name}_; }}"
+            )
         lines.append("")
         lines.append("    void destroyHandles() noexcept {")
         for o in reversed(self.ordered_objects()):
@@ -986,10 +990,12 @@ class ClassGenerator:
             lines.append(f"        // {o.vulkan_name} '{o.instance_name}'")
             lines.extend(_indent(self._gen_object_destruction(o), 4))
         lines.append("    }")
+        lines.append("")
+        lines.append("private:")
+        for o in self.ordered_objects():
+            lines.append(f"    {o.binding.handle} {o.instance_name}_{{}};")
         private_members = self._private_members()
         if private_members:
-            lines.append("")
-            lines.append("private:")
             for decl in private_members:
                 lines.append(f"    // saved for destruction")
                 lines.append(f"    {decl}")
@@ -1005,7 +1011,7 @@ class ClassGenerator:
                 if pname in seen or self._sibling_for_handle(handle_type) is not None:
                     continue
                 ext = self._external_for_handle(handle_type)
-                expr = pname if ext is None else f"{ext[0]}.{ext[1]}"
+                expr = pname if ext is None else f"{ext[0]}.{ext[1]}()"
                 inits.append(f"{pname}_({expr})")
                 seen.add(pname)
         return inits
@@ -1046,7 +1052,7 @@ class ClassGenerator:
             if p.name == o.binding.create_info_param:
                 call_args.append(f"&{info_var}")
             elif p.is_pointer and not p.is_const and p.type in self.registry.handles:
-                call_args.append(f"&{o.instance_name}")
+                call_args.append(f"&{o.instance_name}_")
             elif p.type == "uint32_t" and p.len_value is not None and o.binding.plural:
                 call_args.append("1")
             elif o.binding.plural and p.len_value is not None:
@@ -1081,7 +1087,7 @@ class ClassGenerator:
             return sibling.instance_name
         ext = self._external_for_handle(p.type)
         if ext is not None:
-            return f"{ext[0]}.{ext[1]}"
+            return f"{ext[0]}.{ext[1]}()"
         return f"{_lower_first(p.type)}_"
 
     # struct emission ------------------------------------------------------
@@ -1146,6 +1152,12 @@ class ClassGenerator:
             if member.is_pointer and (
                 member.type in self.registry.structs or member.type in self.registry.handles
             ):
+                if expr.endswith("()"):
+                    # getter call returns by value; materialize a local
+                    # so its address can be taken
+                    local = f"{var}_{base}_ref"
+                    locals_.append(f"{member.type} {local} = {expr};")
+                    return f"&{local}"
                 return f"&{expr}"
             return expr
         if isinstance(value, StructValue) and (
@@ -1241,7 +1253,7 @@ class ClassGenerator:
                     f"class '{self.cd.name}', object '{o.instance_name}': reference to "
                     f"unknown sibling object '{ref.object_name}'"
                 )
-            return ref.object_name
+            return f"{ref.object_name}()"
         other = self.class_lookup.get(ref.class_name)
         if other is None:
             raise GenerationError(
@@ -1268,6 +1280,10 @@ class ClassGenerator:
                 f"{path[0]}' is a {target.binding.handle} but member "
                 f"'{member.name}' expects {member.type}"
             )
+        # object handles are accessed through getters; capability
+        # results (vectors, structs, indices) are public data members
+        if target is not None:
+            return f"{_lower_first(ref.class_name)}.{ref.object_name}()"
         return f"{_lower_first(ref.class_name)}.{ref.object_name}"
 
     def _is_capability_member(self, other: ClassDef, path: list[str]) -> bool:
@@ -1315,7 +1331,7 @@ class ClassGenerator:
         args: list[str] = []
         for p in cmd.params:
             if p.type == o.binding.handle and not p.is_pointer:
-                args.append(o.instance_name)
+                args.append(f"{o.instance_name}_")
             elif p.type in self.registry.handles and not p.is_pointer:
                 sibling = self._sibling_for_handle(p.type)
                 if sibling is not None and sibling.instance_name != o.instance_name:
@@ -1324,7 +1340,7 @@ class ClassGenerator:
                     args.append(f"{_lower_first(p.type)}_")
             elif p.is_const and p.is_pointer:
                 args.append("nullptr")
-        lines = [f"if ({o.instance_name} != VK_NULL_HANDLE) {{"]
+        lines = [f"if ({o.instance_name}_ != VK_NULL_HANDLE) {{"]
         lines.append(f"    {o.binding.destroy_command}({', '.join(args)});")
         lines.append("}")
         return lines

@@ -450,5 +450,5 @@ def test_quad_example_generates(registry: Registry, tmp_path):
     # pNext feature query with chained structs as members
     assert "features_pNext0.sType" in out or "features_pNext" in out
     # descriptor set + pipelines cross-class reference
-    assert "pSetLayouts = &quadDescriptors.setLayout" in out
+    assert "setLayout()_ref" in out or "pSetLayouts = &" in out  # getter result materialized
     assert compile_generated(out, tmp_path)

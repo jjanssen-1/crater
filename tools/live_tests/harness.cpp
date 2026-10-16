@@ -160,10 +160,10 @@ int main(int argc, char** argv) {
         LiveInstance liveInstance(extensionCount, extensions);
 
         uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(liveInstance.instance, &deviceCount, nullptr);
+        vkEnumeratePhysicalDevices(liveInstance.instance(), &deviceCount, nullptr);
         if (deviceCount == 0) throw std::runtime_error("no physical devices");
         std::vector<VkPhysicalDevice> devices(deviceCount);
-        vkEnumeratePhysicalDevices(liveInstance.instance, &deviceCount, devices.data());
+        vkEnumeratePhysicalDevices(liveInstance.instance(), &deviceCount, devices.data());
 
         VkPhysicalDevice physicalDevice = devices[0];
         uint32_t graphicsFamily = pickGraphicsFamily(physicalDevice);
@@ -174,58 +174,58 @@ int main(int argc, char** argv) {
         report("LiveDevice", true);
 
         // --- device objects --------------------------------------------------
-        RUN_TEST(SyncObjects, SyncObjects t(liveDevice.device));
-        RUN_TEST(MemoryObjects, MemoryObjects t(liveDevice.device, VkExtent3D{64, 64, 1}));
-        RUN_TEST(SamplerObjects, SamplerObjects t(liveDevice.device));
-        RUN_TEST(QueryObjects, QueryObjects t(liveDevice.device));
-        RUN_TEST(CommandObjects, CommandObjects t(liveDevice.device, graphicsFamily));
-        RUN_TEST(DescriptorObjects, DescriptorObjects t(liveDevice.device));
+        RUN_TEST(SyncObjects, SyncObjects t(liveDevice.device()));
+        RUN_TEST(MemoryObjects, MemoryObjects t(liveDevice.device(), VkExtent3D{64, 64, 1}));
+        RUN_TEST(SamplerObjects, SamplerObjects t(liveDevice.device()));
+        RUN_TEST(QueryObjects, QueryObjects t(liveDevice.device()));
+        RUN_TEST(CommandObjects, CommandObjects t(liveDevice.device(), graphicsFamily));
+        RUN_TEST(DescriptorObjects, DescriptorObjects t(liveDevice.device()));
 
         // views need the image; construct with the class that owns it
         RUN_TEST(ViewObjects, {
-            MemoryObjects memory(liveDevice.device, VkExtent3D{64, 64, 1});
+            MemoryObjects memory(liveDevice.device(), VkExtent3D{64, 64, 1});
             // views require bound memory: allocate, bind, create, free
-            VkDeviceMemory imageMemory = bindImageMemory(liveDevice.device, physicalDevice, memory.image);
-            ViewObjects views(liveDevice.device, memory.image);
-            vkFreeMemory(liveDevice.device, imageMemory, nullptr);
+            VkDeviceMemory imageMemory = bindImageMemory(liveDevice.device(), physicalDevice, memory.image());
+            ViewObjects views(liveDevice.device(), memory.image());
+            vkFreeMemory(liveDevice.device(), imageMemory, nullptr);
         });
 
         // pipeline objects need a shader module
         RUN_TEST(PipelineObjects, PipelineObjects t(
-            liveDevice.device, sizeof(g_spvVertex), g_spvVertex));
+            liveDevice.device(), sizeof(g_spvVertex), g_spvVertex));
 
         // render pass + framebuffer + graphics pipeline
-        RUN_TEST(RenderObjects, RenderObjects t(liveDevice.device));
+        RUN_TEST(RenderObjects, RenderObjects t(liveDevice.device()));
         RUN_TEST(Framebuffers, {
-            RenderObjects render(liveDevice.device);
-            MemoryObjects memory(liveDevice.device, VkExtent3D{64, 64, 1});
-            VkDeviceMemory imageMemory = bindImageMemory(liveDevice.device, physicalDevice, memory.image);
-            ViewObjects views(liveDevice.device, memory.image);
-            std::vector<VkImageView> attachments{views.view};
-            Framebuffers fb(liveDevice.device, render.renderPass,
+            RenderObjects render(liveDevice.device());
+            MemoryObjects memory(liveDevice.device(), VkExtent3D{64, 64, 1});
+            VkDeviceMemory imageMemory = bindImageMemory(liveDevice.device(), physicalDevice, memory.image());
+            ViewObjects views(liveDevice.device(), memory.image());
+            std::vector<VkImageView> attachments{views.view()};
+            Framebuffers fb(liveDevice.device(), render.renderPass(),
                             attachments.data(), 64, 64);
-            vkFreeMemory(liveDevice.device, imageMemory, nullptr);
+            vkFreeMemory(liveDevice.device(), imageMemory, nullptr);
         });
         RUN_TEST(Pipeline, {
-            PipelineObjects pipelineObjects(liveDevice.device, sizeof(g_spvVertex), g_spvVertex);
-            RenderObjects render(liveDevice.device);
+            PipelineObjects pipelineObjects(liveDevice.device(), sizeof(g_spvVertex), g_spvVertex);
+            RenderObjects render(liveDevice.device());
             // a second module with a Fragment entry point
             VkShaderModuleCreateInfo fragInfo{};
             fragInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
             fragInfo.codeSize = sizeof(g_spvFragment);
             fragInfo.pCode = g_spvFragment;
             VkShaderModule fragModule = VK_NULL_HANDLE;
-            if (vkCreateShaderModule(liveDevice.device, &fragInfo, nullptr, &fragModule) != VK_SUCCESS)
+            if (vkCreateShaderModule(liveDevice.device(), &fragInfo, nullptr, &fragModule) != VK_SUCCESS)
                 throw std::runtime_error("vkCreateShaderModule (fragment) failed");
-            Pipeline p(liveDevice.device,
-                       pipelineObjects.pipelineLayout, render.renderPass,
-                       pipelineObjects.shaderModule, fragModule);
-            vkDestroyShaderModule(liveDevice.device, fragModule, nullptr);
+            Pipeline p(liveDevice.device(),
+                       pipelineObjects.pipelineLayout(), render.renderPass(),
+                       pipelineObjects.shaderModule(), fragModule);
+            vkDestroyShaderModule(liveDevice.device(), fragModule, nullptr);
         });
         RUN_TEST(Compute, {
-            PipelineObjects pipelineObjects(liveDevice.device, sizeof(g_spvCompute), g_spvCompute);
-            Compute c(liveDevice.device, pipelineObjects.pipelineLayout,
-                      pipelineObjects.shaderModule);
+            PipelineObjects pipelineObjects(liveDevice.device(), sizeof(g_spvCompute), g_spvCompute);
+            Compute c(liveDevice.device(), pipelineObjects.pipelineLayout(),
+                      pipelineObjects.shaderModule());
         });
 
     } catch (const std::exception& e) {

@@ -71,14 +71,14 @@ public:
                    const quadvk::QuadDeviceCapabilities& caps,
                    VkSwapchainKHR swapchain, VkRenderPass renderPass,
                    VkFormat format, VkExtent2D extent)
-        : commands(device, caps.graphicsQueueFamilyIndex), device_(device.device) {
+        : commands(device, caps.graphicsQueueFamilyIndex), device_(device.device()) {
         uint32_t imageCount = 0;
         vkGetSwapchainImagesKHR(device_, swapchain, &imageCount, nullptr);
         std::vector<VkImage> images(imageCount);
         vkGetSwapchainImagesKHR(device_, swapchain, &imageCount, images.data());
         for (uint32_t i = 0; i < imageCount; ++i) {
             views.emplace_back(device, images[i], format);
-            VkImageView attachment = views[i].view;
+            VkImageView attachment = views[i].view();
             framebuffers.emplace_back(device, renderPass, &attachment,
                                        extent.width, extent.height);
         }
@@ -86,8 +86,8 @@ public:
     FrameResources(const FrameResources&) = delete;
     FrameResources& operator=(const FrameResources&) = delete;
 
-    VkCommandBuffer commandBuffer() const { return commands.commandBuffer; }
-    VkFramebuffer framebuffer(uint32_t i) const { return framebuffers[i].framebuffer; }
+    VkCommandBuffer commandBuffer() const { return commands.commandBuffer(); }
+    VkFramebuffer framebuffer(uint32_t i) const { return framebuffers[i].framebuffer(); }
     uint32_t imageCount() const { return static_cast<uint32_t>(framebuffers.size()); }
 
 private:
@@ -116,9 +116,9 @@ int main() {
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     {
         uint32_t n = 0;
-        vkEnumeratePhysicalDevices(instance.instance, &n, nullptr);
+        vkEnumeratePhysicalDevices(instance.instance(), &n, nullptr);
         std::vector<VkPhysicalDevice> devices(n);
-        vkEnumeratePhysicalDevices(instance.instance, &n, devices.data());
+        vkEnumeratePhysicalDevices(instance.instance(), &n, devices.data());
         if (n == 0) throw std::runtime_error("no devices");
         physicalDevice = devices[0];
     }
@@ -152,15 +152,15 @@ int main() {
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue transferQueue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(device.device, caps.graphicsQueueFamilyIndex, 0, &graphicsQueue);
-    vkGetDeviceQueue(device.device, caps.transferQueueFamilyIndex, 0, &transferQueue);
+    vkGetDeviceQueue(device.device(), caps.graphicsQueueFamilyIndex, 0, &graphicsQueue);
+    vkGetDeviceQueue(device.device(), caps.transferQueueFamilyIndex, 0, &transferQueue);
     std::printf("queue families: graphics %u, transfer %u%s\n",
                 caps.graphicsQueueFamilyIndex, caps.transferQueueFamilyIndex,
                 caps.graphicsQueueFamilyIndex == caps.transferQueueFamilyIndex
                     ? " (shared)" : " (dedicated transfer)");
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (glfwCreateWindowSurface(instance.instance, window, nullptr, &surface) != VK_SUCCESS)
+    if (glfwCreateWindowSurface(instance.instance(), window, nullptr, &surface) != VK_SUCCESS)
         throw std::runtime_error("glfwCreateWindowSurface failed");
 
     QuadSurfaceCapabilities surfaceCaps(physicalDevice, surface);
@@ -173,30 +173,30 @@ int main() {
 
     // bind memory: uniform host-visible, geometry + texture device-local
     VkMemoryRequirements reqs{};
-    vkGetBufferMemoryRequirements(device.device, uniform.uniformBuffer, &reqs);
-    VkDeviceMemory uniformMemory = allocate(device.device, physicalDevice, reqs,
+    vkGetBufferMemoryRequirements(device.device(), uniform.uniformBuffer(), &reqs);
+    VkDeviceMemory uniformMemory = allocate(device.device(), physicalDevice, reqs,
                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    vkBindBufferMemory(device.device, uniform.uniformBuffer, uniformMemory, 0);
+    vkBindBufferMemory(device.device(), uniform.uniformBuffer(), uniformMemory, 0);
 
-    vkGetBufferMemoryRequirements(device.device, geometry.stagingBuffer, &reqs);
-    VkDeviceMemory stagingMemory = allocate(device.device, physicalDevice, reqs,
+    vkGetBufferMemoryRequirements(device.device(), geometry.stagingBuffer(), &reqs);
+    VkDeviceMemory stagingMemory = allocate(device.device(), physicalDevice, reqs,
                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    vkBindBufferMemory(device.device, geometry.stagingBuffer, stagingMemory, 0);
+    vkBindBufferMemory(device.device(), geometry.stagingBuffer(), stagingMemory, 0);
 
     std::vector<VkDeviceMemory> geometryMemories;
-    for (auto buf : {geometry.vertexBuffer, geometry.indexBuffer}) {
-        vkGetBufferMemoryRequirements(device.device, buf, &reqs);
-        VkDeviceMemory m = allocate(device.device, physicalDevice, reqs,
+    for (auto buf : {geometry.vertexBuffer(), geometry.indexBuffer()}) {
+        vkGetBufferMemoryRequirements(device.device(), buf, &reqs);
+        VkDeviceMemory m = allocate(device.device(), physicalDevice, reqs,
                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        vkBindBufferMemory(device.device, buf, m, 0);
+        vkBindBufferMemory(device.device(), buf, m, 0);
         geometryMemories.push_back(m);
     }
-    vkGetImageMemoryRequirements(device.device, texture.textureImage, &reqs);
-    VkDeviceMemory textureMemory = allocate(device.device, physicalDevice, reqs,
+    vkGetImageMemoryRequirements(device.device(), texture.textureImage(), &reqs);
+    VkDeviceMemory textureMemory = allocate(device.device(), physicalDevice, reqs,
                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkBindImageMemory(device.device, texture.textureImage, textureMemory, 0);
+    vkBindImageMemory(device.device(), texture.textureImage(), textureMemory, 0);
     // views require bound memory: create the view after the bind
-    QuadTextureView textureView(device, texture.textureImage);
+    QuadTextureView textureView(device, texture.textureImage());
 
     // checkerboard pixel data (8x8 checkerboard scaled to 64x64)
     std::vector<uint8_t> texelData(64 * 64 * 4);
@@ -224,20 +224,20 @@ int main() {
         // uploads happen one at a time, waiting for the GPU between them)
         struct Upload { const void* data; VkDeviceSize size; VkBuffer dst; };
         const Upload uploads[] = {
-            {vertices, sizeof(vertices), geometry.vertexBuffer},
-            {indices, sizeof(indices), geometry.indexBuffer},
+            {vertices, sizeof(vertices), geometry.vertexBuffer()},
+            {indices, sizeof(indices), geometry.indexBuffer()},
         };
         VkCommandPool uploadPool = VK_NULL_HANDLE;
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.queueFamilyIndex = caps.graphicsQueueFamilyIndex;
-        vkCreateCommandPool(device.device, &poolInfo, nullptr, &uploadPool);
+        vkCreateCommandPool(device.device(), &poolInfo, nullptr, &uploadPool);
         for (const auto& up : uploads) {
             if (up.size > 64) throw std::runtime_error("staging buffer too small");
             void* mapped = nullptr;
-            vkMapMemory(device.device, stagingMemory, 0, up.size, 0, &mapped);
+            vkMapMemory(device.device(), stagingMemory, 0, up.size, 0, &mapped);
             std::memcpy(mapped, up.data, static_cast<size_t>(up.size));
-            vkUnmapMemory(device.device, stagingMemory);
+            vkUnmapMemory(device.device(), stagingMemory);
 
             VkCommandBufferAllocateInfo ai{};
             ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -245,13 +245,13 @@ int main() {
             ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
             ai.commandBufferCount = 1;
             VkCommandBuffer cmd = VK_NULL_HANDLE;
-            vkAllocateCommandBuffers(device.device, &ai, &cmd);
+            vkAllocateCommandBuffers(device.device(), &ai, &cmd);
             VkCommandBufferBeginInfo bi{};
             bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(cmd, &bi);
             VkBufferCopy region{0, 0, up.size};
-            vkCmdCopyBuffer(cmd, geometry.stagingBuffer, up.dst, 1, &region);
+            vkCmdCopyBuffer(cmd, geometry.stagingBuffer(), up.dst, 1, &region);
             vkEndCommandBuffer(cmd);
             VkSubmitInfo si{};
             si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -259,9 +259,9 @@ int main() {
             si.pCommandBuffers = &cmd;
             vkQueueSubmit(graphicsQueue, 1, &si, VK_NULL_HANDLE);
             vkQueueWaitIdle(graphicsQueue);
-            vkFreeCommandBuffers(device.device, uploadPool, 1, &cmd);
+            vkFreeCommandBuffers(device.device(), uploadPool, 1, &cmd);
         }
-        vkDestroyCommandPool(device.device, uploadPool, nullptr);
+        vkDestroyCommandPool(device.device(), uploadPool, nullptr);
     }
 
     // upload the checkerboard texture via a dedicated staging buffer
@@ -271,29 +271,29 @@ int main() {
         sbInfo.size = texelData.size();
         sbInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         VkBuffer texStaging = VK_NULL_HANDLE;
-        vkCreateBuffer(device.device, &sbInfo, nullptr, &texStaging);
+        vkCreateBuffer(device.device(), &sbInfo, nullptr, &texStaging);
         VkMemoryRequirements tr{};
-        vkGetBufferMemoryRequirements(device.device, texStaging, &tr);
-        VkDeviceMemory texStagingMem = allocate(device.device, physicalDevice, tr,
+        vkGetBufferMemoryRequirements(device.device(), texStaging, &tr);
+        VkDeviceMemory texStagingMem = allocate(device.device(), physicalDevice, tr,
                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(device.device, texStaging, texStagingMem, 0);
+        vkBindBufferMemory(device.device(), texStaging, texStagingMem, 0);
         void* mapped = nullptr;
-        vkMapMemory(device.device, texStagingMem, 0, texelData.size(), 0, &mapped);
+        vkMapMemory(device.device(), texStagingMem, 0, texelData.size(), 0, &mapped);
         std::memcpy(mapped, texelData.data(), texelData.size());
-        vkUnmapMemory(device.device, texStagingMem);
+        vkUnmapMemory(device.device(), texStagingMem);
 
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.queueFamilyIndex = caps.graphicsQueueFamilyIndex;
         VkCommandPool pool = VK_NULL_HANDLE;
-        vkCreateCommandPool(device.device, &poolInfo, nullptr, &pool);
+        vkCreateCommandPool(device.device(), &poolInfo, nullptr, &pool);
         VkCommandBufferAllocateInfo ai{};
         ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         ai.commandPool = pool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
-        vkAllocateCommandBuffers(device.device, &ai, &cmd);
+        vkAllocateCommandBuffers(device.device(), &ai, &cmd);
         VkCommandBufferBeginInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -308,14 +308,14 @@ int main() {
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = texture.textureImage;
+        barrier.image = texture.textureImage();
         barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {64, 64, 1};
-        vkCmdCopyBufferToImage(cmd, texStaging, texture.textureImage,
+        vkCmdCopyBufferToImage(cmd, texStaging, texture.textureImage(),
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -330,9 +330,9 @@ int main() {
         si.pCommandBuffers = &cmd;
         vkQueueSubmit(graphicsQueue, 1, &si, VK_NULL_HANDLE);
         vkQueueWaitIdle(graphicsQueue);
-        vkDestroyCommandPool(device.device, pool, nullptr);
-        vkDestroyBuffer(device.device, texStaging, nullptr);
-        vkFreeMemory(device.device, texStagingMem, nullptr);
+        vkDestroyCommandPool(device.device(), pool, nullptr);
+        vkDestroyBuffer(device.device(), texStaging, nullptr);
+        vkFreeMemory(device.device(), texStagingMem, nullptr);
     }
 
     // descriptors
@@ -340,6 +340,7 @@ int main() {
 
     // render pass, pipelines (needs the descriptor set layout)
     QuadRenderPass renderPass(device, surfaceCaps.surfaceFormat.format);
+    VkRenderPass renderPassHandle = renderPass.renderPass();
 
     auto vertexShader = readFile("examples/generated/quad.vert.spv");
     auto fragmentShader = readFile("examples/generated/quad.frag.spv");
@@ -349,7 +350,7 @@ int main() {
                              vertexShader.size(), reinterpret_cast<const uint32_t*>(vertexShader.data()),
                              fragmentShader.size(), reinterpret_cast<const uint32_t*>(fragmentShader.data()),
                              computeShader.size(), reinterpret_cast<const uint32_t*>(computeShader.data()),
-                             renderPass.renderPass);
+                             renderPass.renderPass());
 
     // swapchain-owning objects live in a nested scope: it closes (RAII
     // destroy of the swapchain) before the surface is destroyed, which
@@ -366,7 +367,7 @@ int main() {
         surfaceCaps.surfaceCapabilities.currentExtent.width != 0xFFFFFFFFu
             ? surfaceCaps.surfaceCapabilities.currentExtent
             : VkExtent2D{800, 600};
-    FrameResources frames(device, caps, swapchain.swapchain, renderPass.renderPass,
+    FrameResources frames(device, caps, swapchain.swapchain(), renderPass.renderPass(),
                           surfaceCaps.surfaceFormat.format, frameExtent);
     // per-image render-finished semaphores (presentation holds them until
     // the image is re-acquired; one acquire semaphore in QuadSync)
@@ -375,30 +376,30 @@ int main() {
         VkSemaphoreCreateInfo si{};
         si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         VkSemaphore sem = VK_NULL_HANDLE;
-        if (vkCreateSemaphore(device.device, &si, nullptr, &sem) != VK_SUCCESS)
+        if (vkCreateSemaphore(device.device(), &si, nullptr, &sem) != VK_SUCCESS)
             throw std::runtime_error("vkCreateSemaphore failed");
         renderFinished.push_back(sem);
     }
 
     // descriptor set write: UBO + combined image sampler
     {
-        VkDescriptorBufferInfo bufferInfo{uniform.uniformBuffer, 0, VK_WHOLE_SIZE};
-        VkDescriptorImageInfo imageInfo{sampler.sampler, textureView.textureView,
+        VkDescriptorBufferInfo bufferInfo{uniform.uniformBuffer(), 0, VK_WHOLE_SIZE};
+        VkDescriptorImageInfo imageInfo{sampler.sampler(), textureView.textureView(),
                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = descriptors.descriptorSet;
+        writes[0].dstSet = descriptors.descriptorSet();
         writes[0].dstBinding = 0;
         writes[0].descriptorCount = 1;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         writes[0].pBufferInfo = &bufferInfo;
         writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = descriptors.descriptorSet;
+        writes[1].dstSet = descriptors.descriptorSet();
         writes[1].dstBinding = 1;
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].pImageInfo = &imageInfo;
-        vkUpdateDescriptorSets(device.device, 2, writes, 0, nullptr);
+        vkUpdateDescriptorSets(device.device(), 2, writes, 0, nullptr);
     }
 
     // --- render loop ---------------------------------------------------
@@ -410,11 +411,12 @@ int main() {
     uint32_t frame = 0;
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
-        waitFrameFence(device.device, 1, &sync.frameInFlight);
-        resetFrameFence(device.device, 1, &sync.frameInFlight);
+        VkFence frameFence = sync.frameInFlight();
+        waitFrameFence(device.device(), 1, &frameFence);
+        resetFrameFence(device.device(), 1, &frameFence);
 
         uint32_t imageIndex = 0;
-        acquireFrameImage(device.device, swapchain.swapchain, sync.imageAvailable,
+        acquireFrameImage(device.device(), swapchain.swapchain(), sync.imageAvailable(),
                           VK_NULL_HANDLE, imageIndex);
 
         // per-frame UBO: the shader reads THREE mat4s (model, view,
@@ -440,9 +442,9 @@ int main() {
             0, 0, 0, 1,
         };
         void* mapped = nullptr;
-        vkMapMemory(device.device, uniformMemory, 0, sizeof(mvp), 0, &mapped);
+        vkMapMemory(device.device(), uniformMemory, 0, sizeof(mvp), 0, &mapped);
         std::memcpy(mapped, mvp, sizeof(mvp));
-        vkUnmapMemory(device.device, uniformMemory);
+        vkUnmapMemory(device.device(), uniformMemory);
 
         vkResetCommandBuffer(frames.commandBuffer(), 0);
         beginFrameCommandBuffer(frames.commandBuffer());
@@ -456,25 +458,27 @@ int main() {
 
         VkRenderPassBeginInfo rp{};
         rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rp.renderPass = renderPass.renderPass;
+        rp.renderPass = renderPass.renderPass();
         rp.framebuffer = frames.framebuffer(imageIndex);
         rp.renderArea.extent = renderExtent;
         rp.clearValueCount = 1;
         rp.pClearValues = &clearColor;
         vkCmdBeginRenderPass(frames.commandBuffer(), &rp, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(frames.commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipelines.graphicsPipeline);
+                          pipelines.graphicsPipeline());
+        VkDescriptorSet descriptorSetHandle = descriptors.descriptorSet();
         vkCmdBindDescriptorSets(frames.commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelines.pipelineLayout, 0, 1, &descriptors.descriptorSet, 0, nullptr);
+                                pipelines.pipelineLayout(), 0, 1, &descriptorSetHandle, 0, nullptr);
         VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(frames.commandBuffer(), 0, 1, &geometry.vertexBuffer, &offset);
-        vkCmdBindIndexBuffer(frames.commandBuffer(), geometry.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        VkBuffer vertexBufferHandle = geometry.vertexBuffer();
+        vkCmdBindVertexBuffers(frames.commandBuffer(), 0, 1, &vertexBufferHandle, &offset);
+        vkCmdBindIndexBuffer(frames.commandBuffer(), geometry.indexBuffer(), 0, VK_INDEX_TYPE_UINT16);
         // vertex/index data upload happens once, before the loop (see below)
         vkCmdDrawIndexed(frames.commandBuffer(), 6, 1, 0, 0, 0);
         vkCmdEndRenderPass(frames.commandBuffer());
         endFrameCommandBuffer(frames.commandBuffer());
 
-        VkSemaphore waitSem[] = {sync.imageAvailable};
+        VkSemaphore waitSem[] = {sync.imageAvailable()};
         VkSemaphore signalSem[] = {renderFinished[imageIndex]};
         VkPipelineStageFlags waitStage[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         VkSubmitInfo si{};
@@ -487,7 +491,7 @@ int main() {
         si.pCommandBuffers = &cmdBuf;
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = signalSem;
-        if (vkQueueSubmit(graphicsQueue, 1, &si, sync.frameInFlight) != VK_SUCCESS)
+        if (vkQueueSubmit(graphicsQueue, 1, &si, frameFence) != VK_SUCCESS)
             throw std::runtime_error("vkQueueSubmit failed");
 
         VkPresentInfoKHR pi{};
@@ -495,25 +499,26 @@ int main() {
         pi.waitSemaphoreCount = 1;
         pi.pWaitSemaphores = signalSem;
         pi.swapchainCount = 1;
-        pi.pSwapchains = &swapchain.swapchain;
+        VkSwapchainKHR swapchainHandle = swapchain.swapchain();
+        pi.pSwapchains = &swapchainHandle;
         pi.pImageIndices = &imageIndex;
         vkQueuePresentKHR(graphicsQueue, &pi);
     }
 
-        vkDeviceWaitIdle(device.device);
+        vkDeviceWaitIdle(device.device());
 
         // raw allocations (not covered by generated classes): free them
         // before the device dies
-        for (auto sem : renderFinished) vkDestroySemaphore(device.device, sem, nullptr);
-        for (auto m : geometryMemories) vkFreeMemory(device.device, m, nullptr);
-        vkFreeMemory(device.device, textureMemory, nullptr);
-        vkFreeMemory(device.device, stagingMemory, nullptr);
-        vkFreeMemory(device.device, uniformMemory, nullptr);
+        for (auto sem : renderFinished) vkDestroySemaphore(device.device(), sem, nullptr);
+        for (auto m : geometryMemories) vkFreeMemory(device.device(), m, nullptr);
+        vkFreeMemory(device.device(), textureMemory, nullptr);
+        vkFreeMemory(device.device(), stagingMemory, nullptr);
+        vkFreeMemory(device.device(), uniformMemory, nullptr);
     }  // swapchain (and per-image objects) destroyed here
 
     // GLFW created the surface but does not destroy it; the swapchain is
     // gone, so the surface can die before the instance
-    vkDestroySurfaceKHR(instance.instance, surface, nullptr);
+    vkDestroySurfaceKHR(instance.instance(), surface, nullptr);
 
     }  // namespace-scoped RAII objects destroyed here, before GLFW
 

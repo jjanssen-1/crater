@@ -20,11 +20,11 @@ VulkanApp:
         registry,
     )
     assert "class VulkanApp" in out
-    assert "vkCreateInstance(&mainInstanceCreateInfo, nullptr, &mainInstance)" in out
+    assert "vkCreateInstance(&mainInstanceCreateInfo, nullptr, &mainInstance_)" in out
     assert "VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO" in out
     assert 'applicationName_str("Test")' in out
     assert "apiVersion = VK_MAKE_API_VERSION(0, 1, 3, 0)" in out
-    assert "vkDestroyInstance(mainInstance, nullptr);" in out
+    assert "vkDestroyInstance(mainInstance_, nullptr);" in out
 
 
 def test_sibling_ref_orders_creation(registry: Registry):
