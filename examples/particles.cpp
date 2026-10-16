@@ -163,6 +163,22 @@ int main() {
 
     FrameCommands commands(device, caps.graphicsQueueFamilyIndex);
     ParticlesSync sync(device);
+    // per-image render-finished semaphores: presentation holds them until
+    // the image is re-acquired (a single one would be re-signaled while
+    // still in use)
+    std::vector<VkSemaphore> renderFinished;
+    {
+        uint32_t imageCount = 0;
+        vkGetSwapchainImagesKHR(device.device(), swapchain.swapchain(), &imageCount, nullptr);
+        for (uint32_t i = 0; i < imageCount; ++i) {
+            VkSemaphoreCreateInfo si{};
+            si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            VkSemaphore sem = VK_NULL_HANDLE;
+            if (vkCreateSemaphore(device.device(), &si, nullptr, &sem) != VK_SUCCESS)
+                throw std::runtime_error("vkCreateSemaphore failed");
+            renderFinished.push_back(sem);
+        }
+    }
 
     // descriptor writes: storage buffer (particles) + uniform (deltaTime)
     {
@@ -276,24 +292,25 @@ int main() {
         vkCmdEndRenderPass(commands.renderCommandBuffer());
         endFrameCommandBuffer(commands.renderCommandBuffer());
 
+        VkSemaphore drawSignal[] = {renderFinished[imageIndex]};
         VkPipelineStageFlags drawWaitStage[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         VkSubmitInfo drawSubmit{};
         drawSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         drawSubmit.waitSemaphoreCount = 1;
-        drawSubmit.pWaitSemaphores = computeSignal;
+        drawSubmit.pWaitSemaphores = computeSignal;   // wait for compute
         drawSubmit.pWaitDstStageMask = drawWaitStage;
         drawSubmit.commandBufferCount = 1;
         VkCommandBuffer renderBuf = commands.renderCommandBuffer();
         drawSubmit.pCommandBuffers = &renderBuf;
         drawSubmit.signalSemaphoreCount = 1;
-        drawSubmit.pSignalSemaphores = computeSignal;
+        drawSubmit.pSignalSemaphores = drawSignal;    // per-image
         if (vkQueueSubmit(graphicsQueue, 1, &drawSubmit, frameFence) != VK_SUCCESS)
             throw std::runtime_error("graphics vkQueueSubmit failed");
 
         VkPresentInfoKHR pi{};
         pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = computeSignal;
+        pi.pWaitSemaphores = drawSignal;
         pi.swapchainCount = 1;
         VkSwapchainKHR swapchainHandle = swapchain.swapchain();
         pi.pSwapchains = &swapchainHandle;
@@ -305,7 +322,14 @@ int main() {
     }
 
     vkDeviceWaitIdle(device.device());
-    }  // RAII teardown (VMA buffers, pipelines, swapchain, ...) before the surface
+    for (auto sem : renderFinished) vkDestroySemaphore(device.device(), sem, nullptr);
+
+    // GLFW created the surface but does not destroy it; the swapchain and
+    // per-image objects are gone (RAII above), so it can die before the
+    // device/instance
+    vkDestroySurfaceKHR(instance.instance(), surface, nullptr);
+
+    }  // RAII teardown (VMA buffers, pipelines, device, instance)
 
     glfwDestroyWindow(window);
     glfwTerminate();
