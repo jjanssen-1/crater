@@ -20,11 +20,11 @@ VulkanApp:
         registry,
     )
     assert "class VulkanApp" in out
-    assert "vkCreateInstance(&mainInstanceCreateInfo, nullptr, &mainInstance)" in out
+    assert "vkCreateInstance(&mainInstanceCreateInfo, nullptr, &mainInstance_)" in out
     assert "VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO" in out
     assert 'applicationName_str("Test")' in out
     assert "apiVersion = VK_MAKE_API_VERSION(0, 1, 3, 0)" in out
-    assert "vkDestroyInstance(mainInstance, nullptr);" in out
+    assert "vkDestroyInstance(mainInstance_, nullptr);" in out
 
 
 def test_sibling_ref_orders_creation(registry: Registry):
@@ -200,9 +200,8 @@ TriangleFrame:
     name: swapchain
     imageExtent: {{ VkExtent2D extent }}
   VkSemaphore:
-    name: imageAvailable
-  VkSemaphore:
-    name: renderFinished
+    - name: imageAvailable
+    - name: renderFinished
   VkFence:
     name: inFlight
 """
@@ -226,3 +225,88 @@ VulkanApp:
         registry,
     )
     assert compile_generated(out, tmp_path)
+
+
+def test_nested_struct_in_array_item(registry: Registry):
+    out = generate_from_spec(
+        """
+P:
+  VkGraphicsPipeline:
+    viewportState:
+      scissors:
+        - offset:
+            x: 5
+            y: 6
+          extent:
+            width: 800
+            height: 600
+""",
+        registry,
+    )
+    assert "VkOffset2D graphicsPipelineCreateInfo_viewportState_scissors_item0_offset{};" in out
+    assert "graphicsPipelineCreateInfo_viewportState_scissors_item0_offset.x = 5;" in out
+    assert (
+        "graphicsPipelineCreateInfo_viewportState_scissors_item0.extent = "
+        "graphicsPipelineCreateInfo_viewportState_scissors_item0_extent;" in out
+    )
+
+
+def test_vulkan_error_exception_type(registry: Registry, tmp_path):
+    """All generated throws use crater::VulkanError; VkResult failures
+    carry the result code, capability failures use VK_ERROR_UNKNOWN."""
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+T:
+  VkSemaphore:
+    name: sem
+""",
+        registry,
+    )
+    assert "class VulkanError : public std::runtime_error" in out
+    assert 'VulkanError(std::string("vkCreateSemaphore failed (")' in out
+    assert ", result__);" in out
+    assert compile_generated(out, tmp_path)
+
+
+def test_vulkan_error_catchable(registry: Registry, tmp_path):
+    """A translation unit catching crater::VulkanError specifically."""
+    from conftest import compile_generated, generate_from_spec
+
+    out = generate_from_spec(
+        """
+T:
+  VkSemaphore:
+    name: sem
+""",
+        registry,
+    )
+    header = tmp_path / "generated.hpp"
+    header.write_text(out)
+    main = tmp_path / "main.cpp"
+    main.write_text(
+        '#include "generated.hpp"\n'
+        "int main() {\n"
+        "    try {\n"
+        "        T t(VK_NULL_HANDLE);\n"
+        "    } catch (const crater::VulkanError& e) {\n"
+        "        return e.result() == VK_ERROR_INITIALIZATION_FAILED ? 1 : 0;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    import subprocess
+
+    from conftest import find_vulkan_headers
+
+    headers = find_vulkan_headers()
+    if headers is None:
+        pytest.skip("Vulkan headers not available")
+    inc = headers / "include" if (headers / "include/vulkan/vulkan.h").exists() else headers
+    proc = subprocess.run(
+        ["g++", "-std=c++17", f"-I{tmp_path}", f"-I{inc}", "-fsyntax-only", str(main)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr

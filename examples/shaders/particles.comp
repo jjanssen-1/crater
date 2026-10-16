@@ -1,0 +1,21 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(binding = 0) buffer Particles {
+    vec4 positions[];
+};
+
+layout(binding = 1) uniform Params {
+    float deltaTime;
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= positions.length()) return;
+    vec4 p = positions[idx];
+    // slow drift downward, wrap around
+    p.y -= deltaTime * 0.05 * (0.5 + 0.5 * sin(p.x * 17.0 + idx));
+    if (p.y < -0.95) p.y = 0.95;
+    positions[idx] = p;
+}

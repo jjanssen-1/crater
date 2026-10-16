@@ -7,37 +7,44 @@
 #include <cstdint>
 #include <vector>
 
-#include "triangle.hpp"
+#include "generated/triangle.hpp"
 
 int main() {
     // In a real application these come from a window system binding and a
     // file loader; they are exactly the values crater asks the caller for.
-    VkExtent2D extent{800, 600};
-    VkFormat format = VK_FORMAT_B8G8R8A8_SRGB;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
 
     std::vector<uint32_t> vertexShader = {0x07230203, 0x00010000, 0x0008000b};
     std::vector<uint32_t> fragmentShader = {0x07230203, 0x00010000, 0x0008000b};
 
-    // Physical device selection is application logic; here we simply
-    // pick one (enumeration is not object creation, so it stays explicit).
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-
     VulkanInstance instance;
-    VulkanDevice device(physicalDevice);
+
+    // Selects a queue family (graphics required, compute preferred) and
+    // queries the supported features.
+    DeviceCapabilities deviceCapabilities(physicalDevice);
+
+    // Device creation consumes the selected queue family index and the
+    // queried features.
+    VulkanDevice device(deviceCapabilities, physicalDevice);
+
+    // Queries surface formats/present modes/capabilities at runtime and
+    // selects values according to the preference lists in triangle.yaml.
+    SurfaceCapabilities capabilities(physicalDevice, surface);
+
+    // Everything else is declared in triangle.yaml: shader modules,
+    // pipeline layout, render pass, graphics pipeline, swapchain and
+    // synchronization objects, wired to the selected capability values.
     TrianglePipeline pipeline(
+        capabilities,
         device,
         vertexShader.size() * sizeof(uint32_t), vertexShader.data(),
-        fragmentShader.size() * sizeof(uint32_t), fragmentShader.data(),
-        nullptr,
-        extent,
-        format);
+        fragmentShader.size() * sizeof(uint32_t), fragmentShader.data());
 
-    // All Vulkan objects declared in triangle.yaml are alive here:
-    //   instance.instance, device.device, pipeline.vertexModule,
-    //   pipeline.fragmentModule, pipeline.layout, pipeline.renderPass,
-    //   pipeline.pipeline, pipeline.swapchain, pipeline.imageAvailable,
-    //   pipeline.renderFinished, pipeline.inFlight
-    // and are destroyed automatically in reverse creation order.
+    // All Vulkan objects declared in triangle.yaml are alive here and are
+    // destroyed automatically in reverse creation order. The capability
+    // selections are available as capabilities.surfaceFormat,
+    // capabilities.presentMode and capabilities.surfaceCapabilities.
 
     return 0;
 }

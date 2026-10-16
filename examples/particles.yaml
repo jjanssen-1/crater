@@ -1,0 +1,322 @@
+# GPU particle simulation - the feature-rich example beyond the quad.
+#
+# New machinery this exercises (vs. the quad):
+# - VMA: VmaBuffer with persistent host mapping (the compute input is
+#   written via the mapped pointer, no per-frame vkMapMemory), VmaImage
+#   for the fallback texture, the allocator as an ordinary object
+# - a compute pipeline that is actually DISPATCHED (the quad declared
+#   one but never ran it), with a storage buffer written by the GPU
+# - timestamp queries (vkCmdWriteTimestamp2) to measure GPU work
+# - pNext on the device: chained feature structs
+# - format preference with fallback: R16G16B16A16_SFLOAT preferred,
+#   R8G8B8A8_UNORM as a real fallback candidate (not just 'any')
+#
+# The window/surface/swapchain follow the established pattern; see
+# particles.cpp for the imperative parts.
+
+use_vma: true
+
+namespace: particles
+
+InstanceLayers:
+  vkEnumerateInstanceLayerProperties:
+    optional: [VK_LAYER_KHRONOS_validation]
+    as: layers
+
+ParticlesInstance:
+  VkInstance:
+    name: instance
+    applicationInfo:
+      applicationName: "crater particles"
+      engineName: "crater"
+      apiVersion: [1, 2, 0]
+    enabledExtensionCount: {{ uint32_t glfwExtensionCount }}
+    ppEnabledExtensionNames: {{ const char* const* glfwExtensions }}
+    enabledLayerCount: InstanceLayers.layers.size()
+    ppEnabledLayerNames: InstanceLayers.layers.data()
+
+ParticlesCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkEnumerateDeviceExtensionProperties:
+    required: [VK_KHR_swapchain]
+    as: extensions
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    - require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+      prefer: { queueFlags: VK_QUEUE_COMPUTE_BIT }
+      index: true
+      as: graphicsQueueFamily
+    - require: { queueFlags: VK_QUEUE_COMPUTE_BIT }
+      index: true
+      as: computeQueueFamily
+  vkGetPhysicalDeviceFeatures2:
+    pNext:
+      - VkPhysicalDeviceVulkan11Features: {}
+      - VkPhysicalDeviceVulkan12Features:
+          timelineSemaphore: true
+    as: features
+
+# The queue list is runtime data (a shared graphics/compute family is
+# common): particles.cpp builds it conditionally like the quad.
+ParticlesDevice:
+  VkDevice:
+    name: device
+    enabledExtensionCount: ParticlesCapabilities.extensions.size()
+    ppEnabledExtensionNames: ParticlesCapabilities.extensions.data()
+    queueCreateInfos: {{ const VkDeviceQueueCreateInfo* queueCreateInfos }}
+    queueCreateInfoCount: {{ uint32_t queueCreateInfoCount }}
+    pNext:
+      - VkPhysicalDeviceVulkan12Features:
+          timelineSemaphore: true
+
+# VMA allocator: an ordinary declared object.
+ParticlesAllocator:
+  VmaAllocator:
+    name: allocator
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+    device: {{ VkDevice device }}
+    instance: {{ VkInstance instance }}
+
+# Particle positions: a storage buffer the compute shader updates and
+# the vertex shader reads. Persistently mapped - the initial positions
+# are written through the mapping before the loop, and the compute
+# shader does the rest entirely on the GPU.
+ParticleBuffer:
+  VmaBuffer:
+    name: particleBuffer
+    size: {{ VkDeviceSize bufferSize }}
+    usage: VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+    allocation:
+      usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
+      flags: VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
+
+# Uniform data: a small persistently-mapped buffer, written per frame
+# through the mapping (no vkMapMemory churn).
+FrameUniform:
+  VmaBuffer:
+    name: uniformBuffer
+    size: 16    # float deltaTime
+    usage: VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+    allocation:
+      usage: VMA_MEMORY_USAGE_AUTO_PREFER_HOST
+      flags: VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
+
+# Timestamp query pool: measure the compute pass duration.
+ParticleQueries:
+  VkQueryPool:
+    name: timestampPool
+    queryType: VK_QUERY_TYPE_TIMESTAMP
+    queryCount: 2
+
+# Compute pipeline: integrates particle positions. Dispatched every
+# frame BEFORE the graphics pass reads the buffer (same queue, so the
+# ordering is submission order).
+ParticleCompute:
+  VkShaderModule:
+    name: computeModule
+    codeSize: {{ size_t computeCodeSize }}
+    pCode: {{ const uint32_t* computeCode }}
+  VkPipelineLayout:
+    name: computeLayout
+    setLayouts: ParticlesDescriptors.setLayout
+  VkComputePipeline:
+    name: computePipeline
+    layout: computeLayout
+    stage:
+      stage: VK_SHADER_STAGE_COMPUTE_BIT
+      module: computeModule
+      name: main
+
+# Descriptors: storage buffer (compute + vertex read) + uniform.
+ParticlesDescriptors:
+  VkDescriptorSetLayout:
+    name: setLayout
+    bindings:
+      - binding: 0
+        descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+        descriptorCount: 1
+        stageFlags: VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT
+      - binding: 1
+        descriptorType: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        descriptorCount: 1
+        stageFlags: VK_SHADER_STAGE_COMPUTE_BIT
+  VkDescriptorPool:
+    name: descriptorPool
+    maxSets: 1
+    poolSizes:
+      - type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+        descriptorCount: 1
+      - type: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        descriptorCount: 1
+  VkDescriptorSet:
+    name: descriptorSet
+    descriptorPool: descriptorPool
+    setLayouts: setLayout
+
+# Graphics: render the particles as points. Viewport/scissor dynamic.
+ParticlesRenderPass:
+  VkRenderPass:
+    name: renderPass
+    attachments:
+      - format: {{ VkFormat format }}
+        samples: VK_SAMPLE_COUNT_1_BIT
+        loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR
+        storeOp: VK_ATTACHMENT_STORE_OP_STORE
+        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE
+        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE
+        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+        finalLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    subpasses:
+      - pipelineBindPoint: VK_PIPELINE_BIND_POINT_GRAPHICS
+        colorAttachments:
+          - attachment: 0
+            layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+
+ParticlesPipelines:
+  VkShaderModule:
+    - name: vertexModule
+      codeSize: {{ size_t vertexCodeSize }}
+      pCode: {{ const uint32_t* vertexCode }}
+    - name: fragmentModule
+      codeSize: {{ size_t fragmentCodeSize }}
+      pCode: {{ const uint32_t* fragmentCode }}
+  VkPipelineLayout:
+    name: graphicsLayout
+    setLayouts: ParticlesDescriptors.setLayout
+  VkGraphicsPipeline:
+    name: graphicsPipeline
+    layout: graphicsLayout
+    renderPass: ParticlesRenderPass.renderPass
+    stages:
+      - stage: VK_SHADER_STAGE_VERTEX_BIT
+        module: vertexModule
+        name: main
+      - stage: VK_SHADER_STAGE_FRAGMENT_BIT
+        module: fragmentModule
+        name: main
+    vertexInputState: {}
+    inputAssemblyState:
+      topology: VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+    dynamicState:
+      dynamicStates: [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
+    viewportState:
+      viewportCount: 1
+      scissorCount: 1
+    rasterizationState:
+      polygonMode: VK_POLYGON_MODE_FILL
+      lineWidth: 1.0
+      frontFace: VK_FRONT_FACE_COUNTER_CLOCKWISE
+    multisampleState:
+      rasterizationSamples: VK_SAMPLE_COUNT_1_BIT
+    colorBlendState:
+      attachments:
+        - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
+
+# Swapchain: format preference with an explicit second-choice candidate.
+ParticlesSurface:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  surface: {{ VkSurfaceKHR surface }}
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
+    candidates:
+      - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+      - [VK_FORMAT_R8G8B8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+    as: surfaceFormat
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
+    candidates: [VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR]
+    fallback: any
+    as: presentMode
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR:
+    as: surfaceCapabilities
+
+ParticlesSwapchain:
+  VkSwapchainKHR:
+    name: swapchain
+    surface: {{ VkSurfaceKHR surface }}
+    minImageCount: ParticlesSurface.surfaceCapabilities.minImageCount
+    imageExtent: {{ VkExtent2D swapchainExtent }}
+    imageFormat: ParticlesSurface.surfaceFormat.format
+    imageColorSpace: ParticlesSurface.surfaceFormat.colorSpace
+    presentMode: ParticlesSurface.presentMode
+    imageArrayLayers: 1
+    imageUsage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+    imageSharingMode: VK_SHARING_MODE_EXCLUSIVE
+    preTransform: ParticlesSurface.surfaceCapabilities.currentTransform
+    compositeAlpha: VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+    clipped: true
+
+# Per-image views + framebuffers (same pattern as quad/triangle).
+SwapchainImageView:
+  VkImageView:
+    name: view
+    image: {{ VkImage image }}
+    viewType: VK_IMAGE_VIEW_TYPE_2D
+    format: {{ VkFormat format }}
+    subresourceRange:
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT
+      levelCount: 1
+      layerCount: 1
+
+SwapchainFramebuffer:
+  VkFramebuffer:
+    name: framebuffer
+    renderPass: {{ VkRenderPass renderPass }}
+    attachmentCount: 1
+    attachments: {{ const VkImageView* attachment }}
+    width: {{ uint32_t width }}
+    height: {{ uint32_t height }}
+    layers: 1
+
+# One render-finished semaphore per swapchain image: presentation holds
+# it until the image is re-acquired; main.cpp instantiates one per image
+# and the RAII vector handles both creation and cleanup.
+RenderFinishedSemaphore:
+  VkSemaphore:
+    name: semaphore
+
+# Graphics-frame commands; the compute pass uses its own command buffer
+# per frame (declared here too so both live in one class).
+FrameCommands:
+  VkCommandPool:
+    name: commandPool
+    flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+    queueFamilyIndex: {{ uint32_t queueFamilyIndex }}
+  VkCommandBuffer:
+    - name: renderCommandBuffer
+      commandPool: commandPool
+      level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
+      commandBufferCount: 1
+    - name: computeCommandBuffer
+      commandPool: commandPool
+      level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
+      commandBufferCount: 1
+
+ParticlesSync:
+  VkSemaphore:
+    - name: imageAvailable
+    - name: computeFinished
+  VkFence:
+    name: frameInFlight
+    flags: VK_FENCE_CREATE_SIGNALED_BIT
+
+functions:
+  waitFrameFence:
+    command: vkWaitForFences
+    waitAll: true
+    timeout: 1000000000
+  resetFrameFence:
+    command: vkResetFences
+  acquireFrameImage:
+    command: vkAcquireNextImageKHR
+    timeout: 1000000000
+  beginFrameCommandBuffer:
+    command: vkBeginCommandBuffer
+    flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+  endFrameCommandBuffer:
+    command: vkEndCommandBuffer
+  getAllocationInfo:
+    command: vmaGetAllocationInfo
+  mapMemory:
+    command: vmaMapMemory
+  unmapMemory:
+    command: vmaUnmapMemory

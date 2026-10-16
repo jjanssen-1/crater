@@ -8,12 +8,53 @@ for specific Vulkan types.
 
 from __future__ import annotations
 
+import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-_REGISTRY_DATA = Path(__file__).parent / "data" / "vk.xml"
+_DEV_REGISTRY = Path(__file__).parent / "data" / "vk.xml"
+
+
+class RegistryNotFoundError(Exception):
+    """Raised when no Vulkan registry (vk.xml) could be located."""
+
+
+def find_registry() -> Path:
+    """Locate vk.xml.
+
+    Search order:
+
+    1. $CRATER_VK_XML
+    2. a gitignored dev copy at crater/data/vk.xml
+    3. the Vulkan SDK pointed to by $VULKAN_SDK (share/vulkan/registry,
+       registry, Config)
+    4. system locations (/usr/share/vulkan/registry, ...)
+    """
+    env = os.environ.get("CRATER_VK_XML")
+    if env and Path(env).is_file():
+        return Path(env)
+    if _DEV_REGISTRY.is_file():
+        return _DEV_REGISTRY
+    sdk = os.environ.get("VULKAN_SDK")
+    if sdk:
+        for rel in ("share/vulkan/registry/vk.xml", "registry/vk.xml", "Config/vk.xml"):
+            candidate = Path(sdk) / rel
+            if candidate.is_file():
+                return candidate
+    for candidate in (
+        Path("/usr/share/vulkan/registry/vk.xml"),
+        Path("/usr/local/share/vulkan/registry/vk.xml"),
+        Path("/usr/share/vkregistry/vk.xml"),
+    ):
+        if candidate.is_file():
+            return candidate
+    raise RegistryNotFoundError(
+        "could not find the Vulkan registry (vk.xml). Install the Vulkan "
+        "SDK (VULKAN_SDK), or pass --registry / set CRATER_VK_XML to a "
+        "vk.xml file."
+    )
 
 
 @dataclass
@@ -37,6 +78,7 @@ class Struct:
     name: str
     members: list[Member] = field(default_factory=list)
     alias: Optional[str] = None
+    extends: list[str] = field(default_factory=list)  # structextends targets
 
     @property
     def resolved_name(self) -> str:
@@ -74,6 +116,31 @@ class Command:
 
 
 @dataclass
+class QueryBinding:
+    """The inference result: how a capability can be queried.
+
+    Three generic shapes are recognized from command signatures alone:
+
+    * 'array'  - two-call count+array query
+                 (vkGetPhysicalDeviceSurfaceFormatsKHR, ...);
+    * 'struct' - single output struct pointer
+                 (vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
+    * 'present'- array query whose item struct carries a name member
+                 (extensions, layers); doubles as an availability query.
+    """
+
+    query_command: str
+    shape: str
+    item_type: Optional[str] = None
+    output_param: str = ""
+    count_param: Optional[str] = None
+    output_struct: Optional[str] = None
+    inputs: list[Param] = field(default_factory=list)
+    enumerated_type: Optional[str] = None
+    name_member: Optional[str] = None
+
+
+@dataclass
 class CreateInfoBinding:
     """The inference result: how a handle type is created and destroyed."""
 
@@ -90,18 +157,29 @@ class CreateInfoBinding:
     # parameters of the create command the user may override (e.g. pAllocator)
     extra_params: list[Param] = field(default_factory=list)
     plural: bool = False  # vkCreateGraphicsPipelines creates an array of handles
+    # VMA bindings: a second CreateInfo (allocation params) and the
+    # co-produced allocation handle
+    extra_info_struct: Optional[str] = None
+    extra_output_handle: Optional[str] = None
 
 
 class Registry:
-    def __init__(self, path: Path = _REGISTRY_DATA):
-        self.path = path
-        self._root = ET.parse(str(path)).getroot()
+    def __init__(self, path: Optional[Path] = None):
+        if path is None:
+            path = find_registry()
+        self.path = Path(path)
+        self._root = ET.parse(str(self.path)).getroot()
         self.structs: dict[str, Struct] = {}
         self.commands: dict[str, Command] = {}
         self.handles: set[str] = set()
         self.enums: dict[str, dict[str, str]] = {}  # enum type -> {name: value}
         self.bitmasks: dict[str, dict[str, str]] = {}
+        self.bitmask_bits: dict[str, str] = {}  # VkQueueFlags -> VkQueueFlagBits
+        self._queries: Optional[dict[str, QueryBinding]] = None
+        self._extension_of: dict[str, tuple[str, str]] = {}  # name -> (ext, platform)
+        self._sc_only: set[str] = set()
         self._parse()
+        self._parse_extension_membership()
 
     # ------------------------------------------------------------------ parse
 
@@ -121,6 +199,10 @@ class Registry:
                 name_node = node.find("name")
                 if name_node is not None and name_node.text:
                     self.handles.add(name_node.text)
+            elif category == "bitmask":
+                nm = name or (node.find("name").text if node.find("name") is not None else None)
+                if nm:
+                    self.bitmask_bits[nm] = node.get("requires")
 
         for node in self._root.findall("commands/command"):
             cmd = self._parse_command(node)
@@ -146,6 +228,9 @@ class Registry:
 
     def _parse_struct(self, node: ET.Element) -> Struct:
         s = Struct(name=node.get("name"), alias=node.get("alias"))
+        extends = node.get("structextends")
+        if extends:
+            s.extends = [e.strip() for e in extends.split(",")]
         if s.alias:
             return s
         for m in node.findall("member"):
@@ -164,8 +249,8 @@ class Registry:
             )
             lenattr = m.get("len") or ""
             if lenattr and not lenattr.startswith("latexmath"):
-                primary = lenattr.split(",")[0]
-                member.array_len = primary
+                member.array_len = lenattr.split(",")[0]
+                member.is_array = True
             s.members.append(member)
         self._mark_count_members(s)
         return s
@@ -252,6 +337,156 @@ class Registry:
                 out[name] = self.commands[alias]
         return out
 
+    def _parse_extension_membership(self) -> None:
+        """Map every extension-provided type/command to (extension, platform).
+
+        Providers include extensions, core features, and the Vulkan SC
+        variant feature. A type provided only by the SC variant is
+        SC-only: absent from normal headers and not usable in specs.
+        """
+        platforms = {}
+        for node in self._root.findall("platforms/platform"):
+            platforms[node.get("name")] = node.get("protect")
+        providers = list(self._root.findall("extensions/extension")) + list(self._root.findall("feature"))
+        providers_of: dict[str, list[str]] = {}  # name -> providing api names
+        for ext in providers:
+            ext_name = ext.get("name")
+            # api attributes are comma-separated (e.g. "vulkan,vulkansc");
+            # extensions use 'supported' the same way
+            apis = (ext.get("api") or ext.get("supported") or "vulkan").split(",")
+            api = apis[0]
+            protect = platforms.get(ext.get("platform"))
+            for req in ext.findall("require"):
+                for item in list(req.findall("type")) + list(req.findall("command")) + list(req.findall("enum")):
+                    name = item.get("name") or (item.find("name").text if item.find("name") is not None else None)
+                    if not name:
+                        continue
+                    providers_of.setdefault(name, []).extend(apis)
+                    if name not in self._extension_of or api == "vulkan":
+                        self._extension_of.setdefault(name, (ext_name, protect or ""))
+        self._sc_only = {
+            n for n, apis in providers_of.items() if apis and "vulkan" not in apis
+        }
+
+    def is_sc_only(self, name: str) -> bool:
+        """True if the type/command is provided only by the Vulkan SC
+        variant (or other non-vulkan api variants), i.e. absent from
+        normal headers."""
+        return name in self._sc_only
+
+    def extension_of(self, name: str) -> Optional[tuple[str, str]]:
+        """(extension name, platform protect) providing the given type or
+        command, if it comes from an extension."""
+        return self._extension_of.get(name)
+
+    def flag_bits_type(self, flags_type: str) -> Optional[str]:
+        """The *FlagBits enum backing a *Flags bitmask type, if any."""
+        return self.bitmask_bits.get(flags_type)
+
+    def flag_values(self, flag_bits_type: str) -> set[str]:
+        """Valid constant names of a *FlagBits enum."""
+        return set(self.bitmasks.get(flag_bits_type, {})) | set(self.enums.get(flag_bits_type, {}))
+
+    def load_vma(self) -> None:
+        """Inject the Vulkan Memory Allocator bindings (hand-authored in
+        crater/data/vma_bindings.py, same shapes as the vk.xml inference)
+        into the registry: handles, structs, commands and bindings.
+
+        After this call, VmaAllocator/VmaBuffer/VmaImage are creatable
+        like any Vulkan object, and the VMA calls are usable in the
+        functions: section.
+        """
+        from .data import vma_bindings as vb
+
+        self._vma_loaded = True
+
+        # handles
+        self.handles.update(["VmaAllocator", "VmaAllocation", "VmaPool"])
+
+        # structs
+        for name, info in vb.VMA_STRUCTS.items():
+            members = [
+                Member(
+                    name=n,
+                    type=t,
+                    is_pointer=ptr,
+                    is_const=c,
+                    optional=opt,
+                )
+                for (n, t, ptr, c, opt) in info["members"]
+            ]
+            self.structs[name] = Struct(name=name, members=members)
+
+        # commands
+        def _param(n, t, ptr=False, const=False):
+            return Param(name=n, type=t, is_pointer=ptr, is_const=const)
+
+        self.commands["vmaCreateAllocator"] = Command(
+            name="vmaCreateAllocator",
+            return_type="VkResult",
+            params=[
+                _param("pCreateInfo", "VmaAllocatorCreateInfo", True, True),
+                _param("pAllocator", "VmaAllocator", True),
+            ],
+            successcodes=["VK_SUCCESS"],
+        )
+        self.commands["vmaDestroyAllocator"] = Command(
+            name="vmaDestroyAllocator",
+            return_type="void",
+            params=[_param("allocator", "VmaAllocator")],
+        )
+        for key, b in vb.VMA_BINDINGS.items():
+            if key == "VmaAllocator":
+                continue
+            info = vb.VMA_STRUCTS.get(b["extra_info_struct"])
+            self.commands[b["create_command"]] = Command(
+                name=b["create_command"],
+                return_type="VkResult",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("pCreateInfo", b["create_info_struct"], True, True),
+                    _param("pAllocationCreateInfo", b["extra_info_struct"], True, True),
+                    _param("pBuffer" if key == "VmaBuffer" else "pImage", b["handle"], True),
+                    _param("pAllocation", b["extra_output_handle"], True),
+                    _param("pAllocationInfo", "VmaAllocationInfo", True),
+                ],
+                successcodes=["VK_SUCCESS"],
+            )
+            self.commands[b["destroy_command"]] = Command(
+                name=b["destroy_command"],
+                return_type="void",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("buffer" if key == "VmaBuffer" else "image", b["handle"]),
+                    _param("allocation", b["extra_output_handle"]),
+                ],
+            )
+
+        # call functions (usable in the functions: section)
+        for name, call in vb.VMA_CALLS.items():
+            self.commands[name] = Command(
+                name=name,
+                return_type=call["return"],
+                params=[
+                    Param(
+                        name=n,
+                        type=t,
+                        is_pointer=ptr,
+                        is_const=c,
+                    )
+                    for (n, t, ptr, c) in call["params"]
+                ],
+                successcodes=call["success"],
+            )
+
+        # bindings (the same dict the vk.xml inference fills)
+        for key, b in vb.VMA_BINDINGS.items():
+            self._vma_binding_overrides = getattr(self, "_vma_binding_overrides", {})
+            self._vma_binding_overrides[key] = b
+
+    def vma_bindings_active(self) -> bool:
+        return getattr(self, "_vma_binding_overrides", None) is not None
+
     # -------------------------------------------------------------- inference
 
     def bindings(self) -> dict[str, CreateInfoBinding]:
@@ -316,8 +551,24 @@ class Registry:
             binding.extra_params = extras
             bindings[key] = binding
 
-        # destroy inference
+        # VMA bindings (loaded via load_vma)
+        for key, b in getattr(self, "_vma_binding_overrides", {}).items():
+            bindings[key] = CreateInfoBinding(
+                handle=b["handle"],
+                create_command=b["create_command"],
+                create_info_struct=b["create_info_struct"],
+                create_info_param="pCreateInfo",
+                parent_handles=["allocator"],
+                destroy_command=b["destroy_command"],
+                destroy_parent_handles=["allocator"],
+                extra_info_struct=b.get("extra_info_struct"),
+                extra_output_handle=b.get("extra_output_handle"),
+            )
+
+        # destroy inference (skips bindings with an explicit destroy)
         for binding in bindings.values():
+            if binding.destroy_command is not None:
+                continue
             destroy = self._find_destroy(commands, binding)
             if destroy is not None:
                 name, parents = destroy
@@ -336,15 +587,15 @@ class Registry:
     def _find_destroy(self, commands: dict[str, Command], binding: CreateInfoBinding):
         candidates = []
         for cmd in commands.values():
-            if cmd.name.startswith("vkDestroy") and cmd.return_type == "void":
+            if cmd.name.startswith(("vkDestroy", "vkFree")) and cmd.return_type in ("void", "VkResult"):
                 if any(p.type == binding.handle and not p.is_pointer for p in cmd.params):
                     candidates.append(cmd)
         if not candidates:
             return None
         # prefer the destroy command whose name matches the create command
         stem_create = binding.create_command[len("vkCreate") :]
-        preferred = f"vkDestroy{stem_create}"
-        exact = [c for c in candidates if c.name == preferred]
+        preferred = [f"vkDestroy{stem_create}", f"vkFree{stem_create}"]
+        exact = [c for c in candidates if c.name in preferred]
         if exact:
             cmd = exact[0]
         else:
@@ -358,3 +609,223 @@ class Registry:
             if p.type in self.handles and p.type != binding.handle and not p.is_pointer
         ]
         return cmd.name, parents
+
+    def extension_of(self, name: str) -> Optional[tuple[str, str]]:
+        """(extension name, platform protect) providing the given type or
+        command, if it comes from an extension."""
+        return self._extension_of.get(name)
+
+    def flag_bits_type(self, flags_type: str) -> Optional[str]:
+        """The *FlagBits enum backing a *Flags bitmask type, if any."""
+        return self.bitmask_bits.get(flags_type)
+
+    def flag_values(self, flag_bits_type: str) -> set[str]:
+        """Valid constant names of a *FlagBits enum."""
+        return set(self.bitmasks.get(flag_bits_type, {})) | set(self.enums.get(flag_bits_type, {}))
+
+    def load_vma(self) -> None:
+        """Inject the Vulkan Memory Allocator bindings (hand-authored in
+        crater/data/vma_bindings.py, same shapes as the vk.xml inference)
+        into the registry: handles, structs, commands and bindings.
+
+        After this call, VmaAllocator/VmaBuffer/VmaImage are creatable
+        like any Vulkan object, and the VMA calls are usable in the
+        functions: section.
+        """
+        from .data import vma_bindings as vb
+
+        self._vma_loaded = True
+
+        # handles
+        self.handles.update(["VmaAllocator", "VmaAllocation", "VmaPool"])
+
+        # structs
+        for name, info in vb.VMA_STRUCTS.items():
+            members = [
+                Member(
+                    name=n,
+                    type=t,
+                    is_pointer=ptr,
+                    is_const=c,
+                    optional=opt,
+                )
+                for (n, t, ptr, c, opt) in info["members"]
+            ]
+            self.structs[name] = Struct(name=name, members=members)
+
+        # commands
+        def _param(n, t, ptr=False, const=False):
+            return Param(name=n, type=t, is_pointer=ptr, is_const=const)
+
+        self.commands["vmaCreateAllocator"] = Command(
+            name="vmaCreateAllocator",
+            return_type="VkResult",
+            params=[
+                _param("pCreateInfo", "VmaAllocatorCreateInfo", True, True),
+                _param("pAllocator", "VmaAllocator", True),
+            ],
+            successcodes=["VK_SUCCESS"],
+        )
+        self.commands["vmaDestroyAllocator"] = Command(
+            name="vmaDestroyAllocator",
+            return_type="void",
+            params=[_param("allocator", "VmaAllocator")],
+        )
+        for key, b in vb.VMA_BINDINGS.items():
+            if key == "VmaAllocator":
+                continue
+            info = vb.VMA_STRUCTS.get(b["extra_info_struct"])
+            self.commands[b["create_command"]] = Command(
+                name=b["create_command"],
+                return_type="VkResult",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("pCreateInfo", b["create_info_struct"], True, True),
+                    _param("pAllocationCreateInfo", b["extra_info_struct"], True, True),
+                    _param("pBuffer" if key == "VmaBuffer" else "pImage", b["handle"], True),
+                    _param("pAllocation", b["extra_output_handle"], True),
+                    _param("pAllocationInfo", "VmaAllocationInfo", True),
+                ],
+                successcodes=["VK_SUCCESS"],
+            )
+            self.commands[b["destroy_command"]] = Command(
+                name=b["destroy_command"],
+                return_type="void",
+                params=[
+                    _param("allocator", "VmaAllocator"),
+                    _param("buffer" if key == "VmaBuffer" else "image", b["handle"]),
+                    _param("allocation", b["extra_output_handle"]),
+                ],
+            )
+
+        # call functions (usable in the functions: section)
+        for name, call in vb.VMA_CALLS.items():
+            self.commands[name] = Command(
+                name=name,
+                return_type=call["return"],
+                params=[
+                    Param(
+                        name=n,
+                        type=t,
+                        is_pointer=ptr,
+                        is_const=c,
+                    )
+                    for (n, t, ptr, c) in call["params"]
+                ],
+                successcodes=call["success"],
+            )
+
+        # bindings (the same dict the vk.xml inference fills)
+        for key, b in vb.VMA_BINDINGS.items():
+            self._vma_binding_overrides = getattr(self, "_vma_binding_overrides", {})
+            self._vma_binding_overrides[key] = b
+
+    def vma_bindings_active(self) -> bool:
+        return getattr(self, "_vma_binding_overrides", None) is not None
+
+    # -------------------------------------------------------------- inference
+
+    def queries(self) -> dict[str, QueryBinding]:
+        """Infer capability queries, keyed by command name.
+
+        A command is a query if its name starts with vkGet/vkEnumerate and it
+        has output parameters but creates nothing. Recognition rules are
+        purely structural:
+
+        * array shape: a non-const pointer to a struct/enum type with a len
+          attribute pointing at a non-const count pointer parameter (the
+          classic two-call idiom);
+        * struct shape: exactly one non-const struct pointer output and no
+          count involved;
+        * present shape: an array query whose item struct carries a name
+          member (extensionName/layerName) - the same enumerate command
+          doubles as an availability query.
+        """
+        if self._queries is not None:
+            return self._queries
+        commands = dict(self.commands)
+        commands.update(self._alias_commands())
+        queries: dict[str, QueryBinding] = {}
+
+        for cmd in commands.values():
+            if cmd.name.startswith(("vkCreate", "vkAllocate")):
+                continue
+            if not cmd.name.startswith(("vkGet", "vkEnumerate")):
+                continue
+            array_param = None
+            count_param = None
+            for p in cmd.params:
+                if (
+                    not p.is_const
+                    and p.is_pointer
+                    and p.array_len
+                    and p.len_reference
+                    and (p.type in self.structs or p.type in self.enums or p.type in self.handles)
+                ):
+                    count = next((x for x in cmd.params if x.name == p.len_reference), None)
+                    if count is not None and count.is_pointer and not count.is_const:
+                        array_param = p
+                        count_param = count
+                        break
+            if array_param is not None and count_param is not None:
+                inputs = [
+                    x
+                    for x in cmd.params
+                    if x is not array_param and x is not count_param and not x.is_const
+                ]
+                queries[cmd.name] = QueryBinding(
+                    query_command=cmd.name,
+                    shape="array",
+                    item_type=array_param.type,
+                    output_param=array_param.name,
+                    count_param=count_param.name,
+                    inputs=inputs,
+                )
+                continue
+            # struct shape
+            outputs = [p for p in cmd.params if not p.is_const and p.is_pointer and p.type in self.structs]
+            if len(outputs) == 1 and outputs[0].array_len is None:
+                p = outputs[0]
+                others = [x for x in cmd.params if x is not p]
+                # every other parameter must be an input: by value, or an
+                # optional const pointer (allocator-style), never a second output
+                if all((not x.is_pointer and not x.is_const) or x.is_const or x.type in self.handles for x in others):
+                    inputs = [x for x in others if not x.is_const]
+                    queries[cmd.name] = QueryBinding(
+                        query_command=cmd.name,
+                        shape="struct",
+                        output_param=p.name,
+                        output_struct=p.type,
+                        inputs=inputs,
+                    )
+
+        # present shape: array queries whose item struct carries a name member
+        for cmd_name, qb in list(queries.items()):
+            if qb.shape != "array":
+                continue
+            s = self.resolve_struct(qb.item_type) if qb.item_type else None
+            if s is None:
+                continue
+            name_member = next(
+                (
+                    m.name
+                    for m in s.members
+                    if m.type == "char" and m.is_array and "name" in m.name.lower()
+                ),
+                None,
+            )
+            if name_member is None:
+                continue
+            queries[cmd_name] = QueryBinding(
+                query_command=qb.query_command,
+                shape="present",
+                item_type=qb.item_type,
+                output_param=qb.output_param,
+                count_param=qb.count_param,
+                enumerated_type=qb.item_type,
+                name_member=name_member,
+                inputs=qb.inputs,
+            )
+
+        self._queries = queries
+        return queries

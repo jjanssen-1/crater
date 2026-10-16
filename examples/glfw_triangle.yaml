@@ -1,0 +1,215 @@
+# Full Vulkan triangle with GLFW, crater style.
+#
+# Everything declarable is declared here; the few values only known at
+# runtime (GLFW extension list, window surface, shader code) are
+# constructor parameters. See examples/glfw_triangle.cpp.
+
+# Instance-level capabilities: the validation layer is checked up front.
+# 'optional' means: enable it when present, report when not; use
+# 'required' instead to make crater throw a clear error when missing.
+InstanceLayers:
+  vkEnumerateInstanceLayerProperties:
+    optional: [VK_LAYER_KHRONOS_validation]
+    as: layers
+
+VulkanInstance:
+  VkInstance:
+    name: instance
+    applicationInfo:
+      applicationName: "crater triangle"
+      engineName: "crater"
+      apiVersion: [1, 3, 0]
+    # GLFW provides the extension list at runtime.
+    enabledExtensionCount: {{ uint32_t glfwExtensionCount }}
+    ppEnabledExtensionNames: {{ const char* const* glfwExtensions }}
+    # the layer list comes from the InstanceLayers capability query above
+    enabledLayerCount: InstanceLayers.layers.size()
+    ppEnabledLayerNames: InstanceLayers.layers.data()
+
+DeviceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkEnumerateDeviceExtensionProperties:
+    required: [VK_KHR_swapchain]
+    as: extensions
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+    prefer: { queueFlags: VK_QUEUE_COMPUTE_BIT }
+    index: true
+    as: graphicsQueueFamily
+  vkGetPhysicalDeviceFeatures2:
+    as: features
+
+VulkanDevice:
+  VkDevice:
+    name: device
+    queueCreateInfos:
+      - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
+        queueCount: 1
+        pQueuePriorities: [1.0]
+    enabledExtensionCount: DeviceCapabilities.extensions.size()
+    ppEnabledExtensionNames: DeviceCapabilities.extensions.data()
+    # enable exactly the features we use; enabling the whole queried
+    # struct would turn on everything the device supports (e.g.
+    # robustBufferAccess, which costs performance)
+    enabledFeatures:
+      samplerAnisotropy: DeviceCapabilities.features.features.samplerAnisotropy
+      fillModeNonSolid: true
+
+SurfaceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  surface: {{ VkSurfaceKHR surface }}
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
+    candidates:
+      - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+      - [VK_FORMAT_R8G8B8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+    as: surfaceFormat
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
+    candidates: [VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR]
+    fallback: any
+    as: presentMode
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR:
+    as: surfaceCapabilities
+
+TrianglePipeline:
+  VkShaderModule:
+    - name: vertexModule
+      codeSize: {{ size_t vertexShaderSize }}
+      pCode: {{ const uint32_t* vertexShaderCode }}
+    - name: fragmentModule
+      codeSize: {{ size_t fragmentShaderSize }}
+      pCode: {{ const uint32_t* fragmentShaderCode }}
+  VkPipelineLayout:
+    name: layout
+  VkRenderPass:
+    name: renderPass
+    attachments:
+      - format: SurfaceCapabilities.surfaceFormat.format
+        samples: VK_SAMPLE_COUNT_1_BIT
+        loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR
+        storeOp: VK_ATTACHMENT_STORE_OP_STORE
+        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE
+        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE
+        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+        finalLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    subpasses:
+      - pipelineBindPoint: VK_PIPELINE_BIND_POINT_GRAPHICS
+        colorAttachments:
+          - attachment: 0
+            layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+  VkGraphicsPipeline:
+    name: pipeline
+    layout: layout
+    renderPass: renderPass
+    stages:
+      - stage: VK_SHADER_STAGE_VERTEX_BIT
+        module: vertexModule
+        name: main
+      - stage: VK_SHADER_STAGE_FRAGMENT_BIT
+        module: fragmentModule
+        name: main
+    vertexInputState: {}
+    inputAssemblyState:
+      topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    dynamicState:
+      dynamicStates: [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
+    # viewport/scissor are dynamic: the surface extent can be
+    # 0xFFFFFFFF (unknown) on some platforms, and changes on resize
+    viewportState:
+      viewportCount: 1
+      scissorCount: 1
+    rasterizationState:
+      polygonMode: VK_POLYGON_MODE_FILL
+      lineWidth: 1.0
+      cullMode: VK_CULL_MODE_NONE
+      frontFace: VK_FRONT_FACE_COUNTER_CLOCKWISE
+    multisampleState:
+      rasterizationSamples: VK_SAMPLE_COUNT_1_BIT
+    colorBlendState:
+      attachments:
+        - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
+  VkSwapchainKHR:
+    name: swapchain
+    surface: SurfaceCapabilities.surface
+    minImageCount: SurfaceCapabilities.surfaceCapabilities.minImageCount
+    imageExtent: {{ VkExtent2D swapchainExtent }}
+    imageFormat: SurfaceCapabilities.surfaceFormat.format
+    imageColorSpace: SurfaceCapabilities.surfaceFormat.colorSpace
+    presentMode: SurfaceCapabilities.presentMode
+    imageArrayLayers: 1
+    imageUsage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+    imageSharingMode: VK_SHARING_MODE_EXCLUSIVE
+    preTransform: SurfaceCapabilities.surfaceCapabilities.currentTransform
+    compositeAlpha: VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+    clipped: true
+  VkSemaphore:
+    name: imageAvailable
+  VkFence:
+    name: inFlight
+    flags: VK_FENCE_CREATE_SIGNALED_BIT
+
+# One image view per swapchain image: an ordinary object class; the
+# image handle is a constructor parameter. main.cpp holds one instance
+# per swapchain image (the count is runtime-only, so the vector lives
+# there - the object creation itself is fully declarative).
+SwapchainImageView:
+  VkImageView:
+    name: view
+    image: {{ VkImage image }}
+    viewType: VK_IMAGE_VIEW_TYPE_2D
+    format: {{ VkFormat format }}
+    subresourceRange:
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT
+      levelCount: 1
+      layerCount: 1
+
+# One framebuffer per swapchain image; the render pass and the view's
+# handle are parameters (the view is created by SwapchainImageView).
+SwapchainFramebuffer:
+  VkFramebuffer:
+    name: framebuffer
+    renderPass: {{ VkRenderPass renderPass }}
+    attachmentCount: 1
+    attachments: {{ const VkImageView* attachment }}
+    width: {{ uint32_t width }}
+    height: {{ uint32_t height }}
+    layers: 1
+
+# One render-finished semaphore per swapchain image (presentation holds
+# it until the image is re-acquired); main.cpp instantiates one per
+# image, and the destructor frees them - no manual cleanup.
+RenderFinishedSemaphore:
+  VkSemaphore:
+    name: semaphore
+
+# Command pool + one primary command buffer per frame; allocation is
+# vkAllocateCommandBuffers (inferred from the registry like any
+# creation command).
+FrameCommands:
+  VkCommandPool:
+    name: commandPool
+    flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+    queueFamilyIndex: {{ uint32_t queueFamilyIndex }}
+  VkCommandBuffer:
+    name: commandBuffer
+    commandPool: commandPool
+    level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
+    commandBufferCount: 1
+
+# Plain command invocations: info structs hardcoded in YAML, remaining
+# values become function parameters. Free-standing, explicitly named
+# (never overshadowing the command they wrap).
+functions:
+  waitFrameFence:
+    command: vkWaitForFences
+    waitAll: true
+    timeout: 1000000000
+  resetFrameFence:
+    command: vkResetFences
+  acquireFrameImage:
+    command: vkAcquireNextImageKHR
+    timeout: 1000000000
+  beginFrameCommandBuffer:
+    command: vkBeginCommandBuffer
+    flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+  endFrameCommandBuffer:
+    command: vkEndCommandBuffer

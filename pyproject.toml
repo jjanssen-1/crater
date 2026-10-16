@@ -17,8 +17,7 @@ crater = "crater.cli:main"
 [tool.setuptools]
 packages = ["crater"]
 
-[tool.setuptools.package-data]
-crater = ["data/vk.xml", "data/VULKAN_REGISTRY_LICENSE"]
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

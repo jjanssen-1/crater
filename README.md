@@ -17,7 +17,9 @@ all generated code is plain, readable C++ with zero runtime overhead.
 pip install .
 ```
 
-Requires Python ≥ 3.10 and PyYAML.
+Requires Python ≥ 3.10, PyYAML and a Vulkan registry (`vk.xml`). crater
+finds it via `$VULKAN_SDK` / system locations, or you point it at one
+with `--registry` / `$CRATER_VK_XML`.
 
 ## Usage
 
@@ -78,6 +80,150 @@ OurPipeline(const VulkanInstance& vulkanInstance, VkDevice vkDevice,
   (`nullptr`), optional handles like `pipelineCache`
   (`VK_NULL_HANDLE`) — is derived from `vk.xml`. You never specify it.
 
+### Capabilities (queries and selection)
+
+Some values can only be known at runtime - surface formats, present
+modes, available extensions. A **capabilities class** queries them and
+selects values per your rules; other classes then consume the results.
+
+```yaml
+SurfaceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}  # query inputs
+  surface: {{ VkSurfaceKHR surface }}
+  vkGetPhysicalDeviceSurfaceFormatsKHR:            # the query command itself
+    candidates:                  # ordered preference; first match wins
+      - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+    as: surfaceFormat            # name of the result member
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
+    candidates: [VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR]
+    fallback: any                # take any available if none match
+  vkEnumerateDeviceExtensionProperties:   # availability (extensions/layers)
+    required: [VK_KHR_swapchain]   # throws when missing
+    optional: [VK_KHR_display]     # becomes a hasXxx flag
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {}   # plain struct query
+```
+
+Queries are keyed by **command name** - you say exactly which function
+is called, so there is no ambiguity (instance vs. device enumeration
+etc.). The command's shape (two-call count/array, single struct,
+availability), its result type and its required inputs are still
+inferred from the registry.
+
+**Flag-aware selection** picks queue families and similar flag-carrying
+entries; bit names are validated against the registry at generation
+time:
+
+```yaml
+DeviceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }  # must have all bits
+    prefer:  { queueFlags: VK_QUEUE_COMPUTE_BIT }   # rank among matches
+    index: true        # also expose graphicsQueueFamilyIndex
+    as: graphicsQueueFamily
+```
+
+With `index: true` the selection exposes the element's index, which is
+what e.g. `VkDeviceQueueCreateInfo::queueFamilyIndex` needs:
+
+```yaml
+VulkanDevice:
+  VkDevice:
+    queueCreateInfos:
+      - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
+        queueCount: 1
+        pQueuePriorities: [1.0]
+    enabledFeatures: DeviceCapabilities.features.features
+``` Query inputs
+are constructor parameters; declared either as a placeholder, a
+`Class.object` reference (e.g. `instance: VulkanInstance.mainInstance`)
+or left to the default raw handle.
+
+Consuming classes reference results with member paths, which
+automatically adds the capabilities class as a constructor parameter:
+
+```yaml
+  VkSwapchainKHR:
+    imageFormat: SurfaceCapabilities.surfaceFormat.format
+    presentMode: SurfaceCapabilities.presentMode
+```
+
+Extensions/layers are *not* auto-enabled: capabilities report and
+select, enabling stays explicit in the CreateInfos.
+
+### VMA (Vulkan Memory Allocator)
+
+Buffers and images with memory managed by
+[VMA](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
+are declared the same way as any other object - bindings, RAII, getters
+and all. `use_vma: true` loads the (hand-authored) VMA bindings into
+the registry; they carry the same shape as the vk.xml inference, so no
+generator code is special-cased:
+
+```yaml
+use_vma: true
+
+Allocator:
+  VmaAllocator:
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+    device: {{ VkDevice device }}
+
+VertexStaging:
+  VmaBuffer:
+    name: stagingBuffer
+    size: 65536
+    usage: VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+    allocation:              # the VmaAllocationCreateInfo
+      usage: VMA_MEMORY_USAGE_AUTO_PREFER_HOST
+      flags: VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
+```
+
+The generated class owns both handles (the VkBuffer and its
+VmaAllocation) and destroys them together; both are exposed as
+read-only getters. `VmaImage` works identically for images. The
+generated header includes `vk_mem_alloc.h`; the translation unit that
+should instantiate VMA defines `VMA_IMPLEMENTATION` before including
+it.
+
+### Call functions
+
+Commands that are neither object creation nor capability queries can be
+declared as **call functions** - plain invocations with the info struct
+hardcoded in YAML. Everything not hardcoded becomes a function
+parameter; output parameters become references. Result codes are
+checked against the command's success codes from the registry (so e.g.
+`vkAcquireNextImageKHR` correctly accepts `VK_SUBOPTIMAL_KHR`).
+
+```yaml
+FrameSync:
+  vkWaitForFences:
+    waitAll: true
+    timeout: 1000000000
+  vkBeginCommandBuffer:
+    flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+  vkAcquireNextImageKHR:
+    timeout: 1000000000
+```
+
+generates free-standing inline helpers:
+
+```cpp
+waitForFences(device, 1, &inFlight);          // waitAll/timeout baked in
+beginCommandBuffer(commandBuffer);             // ONE_TIME_SUBMIT baked in
+acquireNextImageKHR(device, swapchain,
+                    semaphore, fence, imageIndex);  // output by reference
+```
+
+A top-level `namespace:` key wraps everything the generator emits:
+
+```yaml
+namespace: myvk
+```
+
+This keeps crater an object/structure assistant: rendering logic stays
+in your code, but the boilerplate around it is declared once.
+
 ### Grouping and lifetimes
 
 Objects that "stand together" are grouped in one class; the class
@@ -91,8 +237,8 @@ crater contains **no per-type logic**. Which command creates an object,
 which `Vk*CreateInfo` it takes, which parameters are parents, what the
 destroy command is and whether creation is plural
 (`vkCreateGraphicsPipelines`) is all inferred from command signatures in
-`vk.xml` (vendored under `crater/data`, pass `--registry` to use
-another copy).
+`vk.xml`. The registry is read from your Vulkan SDK (`$VULKAN_SDK`),
+a system location, `--registry` or `$CRATER_VK_XML`; it is not bundled.
 
 ## Benchmark: the triangle
 
@@ -115,12 +261,27 @@ no Vulkan headers are found; set `VK_HEADERS_DIR` or install the
 
 ## Status
 
-Phase 1: object creation/destruction with full registry inference.
-Planned: window-system integration, physical device selection helpers,
-command buffer recording.
+Phase 1: object creation/destruction with full registry inference. ✔
+Phase 2: capability queries, availability checks, pNext chains, call
+functions, namespaces. ✔
+
+Validated:
+- full triangle with GLFW on real hardware, clean validation output,
+  clean teardown
+- 13/13 live object-creation tests on a real device (sync, memory,
+  images, views, samplers, descriptors, queries, command pools,
+  pipelines - graphics and compute)
+- pNext: 916/916 registry-legal extender pairs compile; live queries
+  chain the full registry (~400 structs) against a real driver with
+  zero errors; live chaining of every device-supported extension
+  struct works
+- 78/78 creation bindings compile (69 platform-independent + 9
+  correctly platform-classified)
+
+Planned: per-image object fan-out (framebuffers/views per swapchain
+image), swapchain recreation, generation-time warning mode (statically
+flag invalid zero-initialized defaults).
 
 ## License
 
-MIT. The vendored `crater/data/vk.xml` is Copyright 2015-2026 The
-Khronos Group Inc. (SPDX: Apache-2.0 OR MIT), see
-`crater/data/VULKAN_REGISTRY_LICENSE`.
+MIT.

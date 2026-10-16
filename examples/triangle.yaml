@@ -3,8 +3,9 @@
 # The classic ~1000 LOC of instance/device/pipeline/swapchain
 # boilerplate collapses into this declarative file. Everything the
 # generator emits is derived from vk.xml: struct members, sType values,
-# array counts, creation order, destruction order and defaults
-# (allocators -> nullptr, optional handles -> VK_NULL_HANDLE).
+# array counts, creation order, destruction order, defaults
+# (allocators -> nullptr, optional handles -> VK_NULL_HANDLE) and the
+# capability queries below.
 
 VulkanInstance:
   VkInstance:
@@ -14,11 +15,43 @@ VulkanInstance:
       engineName: "crater"
       apiVersion: [1, 3, 0]
 
+# Queries queue families and features at runtime; the graphics queue
+# family index and enabled features flow into device creation below.
+DeviceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+    prefer: { queueFlags: VK_QUEUE_COMPUTE_BIT }
+    index: true
+    as: graphicsQueueFamily
+  vkGetPhysicalDeviceFeatures2:
+    as: features
+
 VulkanDevice:
   VkDevice:
     name: device
-    enabledExtensionNames:
-      - VK_KHR_swapchain
+    queueCreateInfos:
+      - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
+        queueCount: 1
+        pQueuePriorities: [1.0]
+    enabledFeatures: DeviceCapabilities.features.features
+
+# Queries surface capabilities at runtime and selects values.
+# Inputs are constructor parameters; results are members that other
+# classes consume via SurfaceCapabilities.xxx references.
+SurfaceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  surface: {{ VkSurfaceKHR surface }}
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
+    candidates:
+      - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+      - [VK_FORMAT_R8G8B8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+    as: surfaceFormat
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
+    candidates: [VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR]
+    fallback: any
+    as: presentMode
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR: {}
 
 TrianglePipeline:
   VkShaderModule:
@@ -43,12 +76,15 @@ TrianglePipeline:
       - stage: VK_SHADER_STAGE_FRAGMENT_BIT
         module: fragmentModule
         name: frag
-    vertexInputState: {}
-    inputAssemblyState:
-      topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    multisampleState:
+      rasterizationSamples: VK_SAMPLE_COUNT_1_BIT
+    dynamicState:
+      dynamicStates: [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
     viewportState:
       viewportCount: 1
-      scissors: {{ scissors }}
+      scissorCount: 1
+    inputAssemblyState:
+      topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
     rasterizationState:
       polygonMode: VK_POLYGON_MODE_FILL
       lineWidth: 1.0
@@ -58,15 +94,15 @@ TrianglePipeline:
         - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
   VkSwapchainKHR:
     name: swapchain
-    imageExtent: {{ VkExtent2D extent }}
-    imageFormat: {{ VkFormat format }}
-    imageColorSpace: VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+    imageExtent: SurfaceCapabilities.surfaceCapabilities.currentExtent
+    imageFormat: SurfaceCapabilities.surfaceFormat.format
+    imageColorSpace: SurfaceCapabilities.surfaceFormat.colorSpace
+    presentMode: SurfaceCapabilities.presentMode
     imageArrayLayers: 1
     imageUsage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
     imageSharingMode: VK_SHARING_MODE_EXCLUSIVE
     preTransform: VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
     compositeAlpha: VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
-    presentMode: VK_PRESENT_MODE_FIFO_KHR
     clipped: true
   VkSemaphore:
     - name: imageAvailable

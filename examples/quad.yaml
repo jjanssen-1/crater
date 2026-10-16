@@ -1,0 +1,327 @@
+# A more feature-rich example: an animated textured quad.
+#
+# Exercises: multi-selection queue families (graphics + dedicated
+# transfer preference), pNext feature queries, descriptor pool + set
+# layout + descriptor set, uniform buffer with memory binding, vertex +
+# index buffers, sampler + image + view, a render pass with a
+# sampled attachment, graphics AND compute pipelines, semaphores/fences
+# per frame, and call functions for the per-frame updates.
+#
+# The window/surface/swapchain follow the triangle example; see
+# quad.cpp for the imperative parts (uploads, recording, loop).
+
+namespace: quadvk
+
+InstanceLayers:
+  vkEnumerateInstanceLayerProperties:
+    optional: [VK_LAYER_KHRONOS_validation]
+    as: layers
+
+QuadInstance:
+  VkInstance:
+    name: instance
+    applicationInfo:
+      applicationName: "crater quad"
+      engineName: "crater"
+      apiVersion: [1, 2, 0]
+    enabledExtensionCount: {{ uint32_t glfwExtensionCount }}
+    ppEnabledExtensionNames: {{ const char* const* glfwExtensions }}
+    enabledLayerCount: InstanceLayers.layers.size()
+    ppEnabledLayerNames: InstanceLayers.layers.data()
+
+QuadDeviceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  vkEnumerateDeviceExtensionProperties:
+    required: [VK_KHR_swapchain]
+    as: extensions
+  # two selections from ONE query: graphics family for rendering, and a
+  # transfer-capable family (preferring one that is NOT graphics -
+  # a dedicated transfer queue - but accepting a shared one)
+  vkGetPhysicalDeviceQueueFamilyProperties:
+    - require: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+      index: true
+      as: graphicsQueueFamily
+    - require: { queueFlags: VK_QUEUE_TRANSFER_BIT }
+      prefer: { queueFlags: VK_QUEUE_GRAPHICS_BIT }
+      index: true
+      as: transferQueueFamily
+  vkGetPhysicalDeviceFeatures2:
+    pNext:
+      - VkPhysicalDeviceVulkan11Features: {}
+      - VkPhysicalDeviceVulkan12Features: {}
+    as: features
+
+# The queue list is runtime data: whether the graphics and transfer
+# selections land on the same family (no dedicated transfer queue) is
+# only known after the capability query, and duplicate family entries
+# in queueCreateInfos are invalid. quad.cpp builds the list (one entry
+# for a shared family, two otherwise) and passes it in.
+QuadDevice:
+  VkDevice:
+    name: device
+    enabledExtensionCount: QuadDeviceCapabilities.extensions.size()
+    ppEnabledExtensionNames: QuadDeviceCapabilities.extensions.data()
+    queueCreateInfos: {{ const VkDeviceQueueCreateInfo* queueCreateInfos }}
+    queueCreateInfoCount: {{ uint32_t queueCreateInfoCount }}
+
+QuadSurfaceCapabilities:
+  physicalDevice: {{ VkPhysicalDevice physicalDevice }}
+  surface: {{ VkSurfaceKHR surface }}
+  vkGetPhysicalDeviceSurfaceFormatsKHR:
+    candidates:
+      - [VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+      - [VK_FORMAT_R8G8B8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR]
+    as: surfaceFormat
+  vkGetPhysicalDeviceSurfacePresentModesKHR:
+    candidates: [VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR]
+    fallback: any
+    as: presentMode
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR:
+    as: surfaceCapabilities
+
+# Uniform buffer for the per-frame MVP matrix; memory is bound by
+# quad.cpp (host-visible type selection is runtime logic).
+QuadUniform:
+  VkBuffer:
+    name: uniformBuffer
+    size: 192   # 3 x mat4 (model, view, proj), padded
+    usage: VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+
+# Vertex + index buffers for the quad.
+QuadGeometry:
+  VkBuffer:
+    - name: vertexBuffer
+      size: 64        # 4 vertices x (pos2 + uv2) floats
+      usage: VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+    - name: indexBuffer
+      size: 12        # 6 uint16 indices
+      usage: VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+    - name: stagingBuffer
+      size: 64        # one upload at a time; quad.cpp copies through it
+      usage: VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+
+# Checkerboard texture: image + memory binding (quad.cpp) + view.
+QuadTexture:
+  VkImage:
+    name: textureImage
+    imageType: VK_IMAGE_TYPE_2D
+    format: VK_FORMAT_R8G8B8A8_UNORM
+    extent: {{ VkExtent3D textureExtent }}
+    mipLevels: 1
+    arrayLayers: 1
+    samples: VK_SAMPLE_COUNT_1_BIT
+    tiling: VK_IMAGE_TILING_OPTIMAL
+    usage: VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    sharingMode: VK_SHARING_MODE_EXCLUSIVE
+    initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+
+QuadTextureView:
+  VkImageView:
+    name: textureView
+    image: {{ VkImage image }}
+    viewType: VK_IMAGE_VIEW_TYPE_2D
+    format: VK_FORMAT_R8G8B8A8_UNORM
+    subresourceRange:
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT
+      levelCount: 1
+      layerCount: 1
+
+QuadSampler:
+  VkSampler:
+    name: sampler
+    magFilter: VK_FILTER_NEAREST
+    minFilter: VK_FILTER_NEAREST
+    mipmapMode: VK_SAMPLER_MIPMAP_MODE_NEAREST
+    addressModeU: VK_SAMPLER_ADDRESS_MODE_REPEAT
+    addressModeV: VK_SAMPLER_ADDRESS_MODE_REPEAT
+    addressModeW: VK_SAMPLER_ADDRESS_MODE_REPEAT
+    maxLod: VK_LOD_CLAMP_NONE
+
+# Descriptor set layout: one UBO (vertex stage) + one combined image
+# sampler (fragment stage).
+QuadDescriptors:
+  VkDescriptorSetLayout:
+    name: setLayout
+    bindings:
+      - binding: 0
+        descriptorType: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        descriptorCount: 1
+        stageFlags: VK_SHADER_STAGE_VERTEX_BIT
+      - binding: 1
+        descriptorType: VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+        descriptorCount: 1
+        stageFlags: VK_SHADER_STAGE_FRAGMENT_BIT
+  VkDescriptorPool:
+    name: descriptorPool
+    maxSets: 1
+    poolSizes:
+      - type: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        descriptorCount: 1
+      - type: VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+        descriptorCount: 1
+  VkDescriptorSet:
+    name: descriptorSet
+    descriptorPool: descriptorPool
+    setLayouts: setLayout
+
+# Render pass: one color attachment matching the swapchain format.
+QuadRenderPass:
+  VkRenderPass:
+    name: renderPass
+    attachments:
+      - format: {{ VkFormat format }}
+        samples: VK_SAMPLE_COUNT_1_BIT
+        loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR
+        storeOp: VK_ATTACHMENT_STORE_OP_STORE
+        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE
+        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE
+        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+        finalLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    subpasses:
+      - pipelineBindPoint: VK_PIPELINE_BIND_POINT_GRAPHICS
+        colorAttachments:
+          - attachment: 0
+            layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+
+# Graphics pipeline for the quad, plus a compute pipeline that is
+# declared but never dispatched (exercising the second pipeline type).
+QuadPipelines:
+  VkShaderModule:
+    - name: vertexModule
+      codeSize: {{ size_t vertexCodeSize }}
+      pCode: {{ const uint32_t* vertexCode }}
+    - name: fragmentModule
+      codeSize: {{ size_t fragmentCodeSize }}
+      pCode: {{ const uint32_t* fragmentCode }}
+    - name: computeModule
+      codeSize: {{ size_t computeCodeSize }}
+      pCode: {{ const uint32_t* computeCode }}
+  VkPipelineLayout:
+    name: pipelineLayout
+    setLayouts: QuadDescriptors.setLayout
+  VkGraphicsPipeline:
+    name: graphicsPipeline
+    layout: pipelineLayout
+    renderPass: {{ VkRenderPass renderPass }}
+    stages:
+      - stage: VK_SHADER_STAGE_VERTEX_BIT
+        module: vertexModule
+        name: main
+      - stage: VK_SHADER_STAGE_FRAGMENT_BIT
+        module: fragmentModule
+        name: main
+    vertexInputState:
+      vertexBindingDescriptions:
+        - binding: 0
+          stride: 16
+          inputRate: VK_VERTEX_INPUT_RATE_VERTEX
+      vertexAttributeDescriptions:
+        - location: 0
+          binding: 0
+          format: VK_FORMAT_R32G32_SFLOAT
+          offset: 0
+        - location: 1
+          binding: 0
+          format: VK_FORMAT_R32G32_SFLOAT
+          offset: 8
+    inputAssemblyState:
+      topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    dynamicState:
+      dynamicStates: [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
+    viewportState:
+      viewportCount: 1
+      scissorCount: 1
+    rasterizationState:
+      polygonMode: VK_POLYGON_MODE_FILL
+      lineWidth: 1.0
+      frontFace: VK_FRONT_FACE_COUNTER_CLOCKWISE
+      cullMode: VK_CULL_MODE_NONE
+    multisampleState:
+      rasterizationSamples: VK_SAMPLE_COUNT_1_BIT
+    colorBlendState:
+      attachments:
+        - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
+  VkComputePipeline:
+    name: computePipeline
+    layout: pipelineLayout
+    stage:
+      stage: VK_SHADER_STAGE_COMPUTE_BIT
+      module: computeModule
+      name: main
+
+# Swapchain + per-frame sync. The descriptors reference the pipeline
+# layout's set, so the layout must see the descriptor set layout.
+QuadSwapchain:
+  VkSwapchainKHR:
+    name: swapchain
+    surface: {{ VkSurfaceKHR surface }}
+    minImageCount: QuadSurfaceCapabilities.surfaceCapabilities.minImageCount
+    imageExtent: {{ VkExtent2D swapchainExtent }}
+    imageFormat: {{ VkFormat format }}
+    imageColorSpace: VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+    presentMode: QuadSurfaceCapabilities.presentMode
+    imageArrayLayers: 1
+    imageUsage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+    imageSharingMode: VK_SHARING_MODE_EXCLUSIVE
+    preTransform: QuadSurfaceCapabilities.surfaceCapabilities.currentTransform
+    compositeAlpha: VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+    clipped: true
+
+# Per-frame synchronization.
+QuadSync:
+  VkSemaphore:
+    name: imageAvailable
+  VkFence:
+    name: frameInFlight
+    flags: VK_FENCE_CREATE_SIGNALED_BIT
+
+# Per-swapchain-image view and framebuffer (instantiated per image by
+# quad.cpp, same pattern as the triangle).
+SwapchainImageView:
+  VkImageView:
+    name: view
+    image: {{ VkImage image }}
+    viewType: VK_IMAGE_VIEW_TYPE_2D
+    format: {{ VkFormat format }}
+    subresourceRange:
+      aspectMask: VK_IMAGE_ASPECT_COLOR_BIT
+      levelCount: 1
+      layerCount: 1
+
+SwapchainFramebuffer:
+  VkFramebuffer:
+    name: framebuffer
+    renderPass: {{ VkRenderPass renderPass }}
+    attachmentCount: 1
+    attachments: {{ const VkImageView* attachment }}
+    width: {{ uint32_t width }}
+    height: {{ uint32_t height }}
+    layers: 1
+
+FrameCommands:
+  VkCommandPool:
+    name: commandPool
+    flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+    queueFamilyIndex: {{ uint32_t queueFamilyIndex }}
+  VkCommandBuffer:
+    name: commandBuffer
+    commandPool: commandPool
+    level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
+    commandBufferCount: 1
+
+functions:
+  waitFrameFence:
+    command: vkWaitForFences
+    waitAll: true
+    timeout: 1000000000
+  resetFrameFence:
+    command: vkResetFences
+  acquireFrameImage:
+    command: vkAcquireNextImageKHR
+    timeout: 1000000000
+  beginFrameCommandBuffer:
+    command: vkBeginCommandBuffer
+    flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+  endFrameCommandBuffer:
+    command: vkEndCommandBuffer
