@@ -296,10 +296,12 @@ T:
         "    return 0;\n"
         "}\n"
     )
+    import os
     import subprocess
 
+    include = os.environ.get("VK_HEADERS_DIR", "/usr/include")
     proc = subprocess.run(
-        ["g++", "-std=c++17", f"-I{tmp_path}", "-fsyntax-only", str(main)],
+        ["g++", "-std=c++17", f"-I{tmp_path}", f"-I{include}", "-fsyntax-only", str(main)],
         capture_output=True,
         text=True,
     )
