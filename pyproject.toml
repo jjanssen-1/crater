@@ -15,7 +15,7 @@ license = { text = "MIT" }
 crater = "crater.cli:main"
 
 [tool.setuptools]
-packages = ["crater"]
+packages = ["crater", "crater.data"]
 
 
 
