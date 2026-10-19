@@ -1113,7 +1113,7 @@ class ClassGenerator:
     def _handle_arg(self, p) -> str:
         sibling = self._sibling_for_handle(p.type)
         if sibling is not None:
-            return sibling.instance_name
+            return f"{sibling.instance_name}_"
         ext = self._external_for_handle(p.type)
         if ext is not None:
             return f"{ext[0]}.{ext[1]}()"
@@ -1366,7 +1366,7 @@ class ClassGenerator:
             elif p.type in self.registry.handles and not p.is_pointer:
                 sibling = self._sibling_for_handle(p.type)
                 if sibling is not None and sibling.instance_name != o.instance_name:
-                    args.append(sibling.instance_name)
+                    args.append(f"{sibling.instance_name}_")
                 else:
                     args.append(f"{_lower_first(p.type)}_")
             elif p.is_const and p.is_pointer:

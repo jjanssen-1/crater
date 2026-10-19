@@ -310,3 +310,25 @@ T:
         text=True,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_device_with_children_in_one_class_compiles(registry: Registry, tmp_path):
+    """A VkDevice grouped with objects created from it in the SAME class
+    must emit valid parent-handle references (the private members, not
+    the accessor names). Regression test: both the create calls and the
+    destroy calls used the bare instance name, which does not compile."""
+    out = generate_from_spec(
+        """
+App:
+  VkDevice:
+    name: logicalDevice
+  VkSwapchainKHR:
+    name: swapchain
+    surface: "{{ VkSurfaceKHR surface }}"
+""",
+        registry,
+    )
+    assert "vkCreateSwapchainKHR(logicalDevice_, &swapchainCreateInfo" in out
+    assert "vkDestroySwapchainKHR(logicalDevice_, swapchain_" in out
+    assert "logicalDevice()" not in out.split("~App()")[0].split("vkCreateDevice")[1]
+    assert compile_generated(out, tmp_path)
