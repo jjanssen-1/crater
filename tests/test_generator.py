@@ -355,9 +355,12 @@ App:
         registry,
     )
     assert "vkCreateSwapchainKHR(logicalDevice_, &swapchainCreateInfo" in out
-    # the destroy call passes the parent stored from the declared sibling
+    # the destroy call passes the parent stored from the declared sibling;
+    # saved AFTER the sibling's create call (an init-list read would copy
+    # the not-yet-created handle)
     assert "vkDestroySwapchainKHR(device_, swapchain_" in out
-    assert "device_(logicalDevice_)" in out
+    assert "device_ = logicalDevice_;" in out
+    assert "device_(logicalDevice_)" not in out
     # parent handles are never inferred: the spec must declare them
     with pytest.raises(GenerationError):
         generate_from_spec(
