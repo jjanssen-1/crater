@@ -1,0 +1,5 @@
+graft examples
+graft tools
+graft tests
+global-exclude __pycache__
+global-exclude *.py[cod]
