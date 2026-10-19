@@ -36,10 +36,11 @@ int main() {
     // pipeline layout, render pass, graphics pipeline, swapchain and
     // synchronization objects, wired to the selected capability values.
     TrianglePipeline pipeline(
-        capabilities,
         device,
+        capabilities,
         vertexShader.size() * sizeof(uint32_t), vertexShader.data(),
-        fragmentShader.size() * sizeof(uint32_t), fragmentShader.data());
+        fragmentShader.size() * sizeof(uint32_t), fragmentShader.data(),
+        surface);
 
     // All Vulkan objects declared in triangle.yaml are alive here and are
     // destroyed automatically in reverse creation order. The capability

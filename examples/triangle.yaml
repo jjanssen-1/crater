@@ -30,6 +30,7 @@ DeviceCapabilities:
 VulkanDevice:
   VkDevice:
     name: device
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
     queueCreateInfos:
       - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
         queueCount: 1
@@ -56,17 +57,22 @@ SurfaceCapabilities:
 TrianglePipeline:
   VkShaderModule:
     - name: vertexModule
+      device: VulkanDevice.device
       codeSize: {{ size_t vertexShaderSize }}
       pCode: {{ vertexShaderCode }}
     - name: fragmentModule
+      device: VulkanDevice.device
       codeSize: {{ size_t fragmentShaderSize }}
       pCode: {{ fragmentShaderCode }}
   VkPipelineLayout:
     name: layout
+    device: VulkanDevice.device
   VkRenderPass:
     name: renderPass
+    device: VulkanDevice.device
   VkGraphicsPipeline:
     name: pipeline
+    device: VulkanDevice.device
     layout: layout
     renderPass: renderPass
     stages:
@@ -94,6 +100,8 @@ TrianglePipeline:
         - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
   VkSwapchainKHR:
     name: swapchain
+    device: VulkanDevice.device
+    surface: {{ VkSurfaceKHR surface }}
     imageExtent: SurfaceCapabilities.surfaceCapabilities.currentExtent
     imageFormat: SurfaceCapabilities.surfaceFormat.format
     imageColorSpace: SurfaceCapabilities.surfaceFormat.colorSpace
@@ -106,7 +114,10 @@ TrianglePipeline:
     clipped: true
   VkSemaphore:
     - name: imageAvailable
+      device: VulkanDevice.device
     - name: renderFinished
+      device: VulkanDevice.device
   VkFence:
     name: inFlight
+    device: VulkanDevice.device
     flags: VK_FENCE_CREATE_SIGNALED_BIT

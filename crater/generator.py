@@ -770,10 +770,6 @@ class ClassGenerator:
             for ref in self._refs(o):
                 if ref.kind == "sibling" and ref.object_name in name_to_obj:
                     deps[o.instance_name].add(ref.object_name)
-            for handle_type in self._required_handle_types(o):
-                for other in self.cd.objects:
-                    if other is not o and other.binding.handle == handle_type:
-                        deps[o.instance_name].add(other.instance_name)
         order: list[ObjectDef] = []
         remaining = list(self.cd.objects)
         while remaining:
@@ -809,11 +805,55 @@ class ClassGenerator:
             walk(v)
         return out
 
+    def _parent_params(self, o: ObjectDef) -> list[tuple[Param, bool]]:
+        """(param, is_create) for every parent handle parameter of the
+        object's create and destroy commands (device, instance,
+        physicalDevice, allocator, ...). Destroy params are looked up by
+        name, so a create parent doubles as its destroy counterpart."""
+        out: list[tuple[Param, bool]] = []
+        seen: set[str] = set()
+
+        def add(p, is_create: bool) -> None:
+            if p.name in seen:
+                return
+            seen.add(p.name)
+            out.append((p, is_create))
+
+        cmd = self.registry.resolve_command(o.binding.create_command)
+        if cmd is not None:
+            for p in cmd.params:
+                if p.name in o.binding.parent_handles and p.type in self.registry.handles:
+                    add(p, True)
+        if o.binding.destroy_command:
+            dcmd = self.registry.resolve_command(o.binding.destroy_command)
+            if dcmd is not None:
+                for p in dcmd.params:
+                    if (
+                        p.name in o.binding.destroy_parent_handles
+                        and p.type in self.registry.handles
+                        and p.type != o.binding.handle
+                        and p.type != "VmaAllocation"
+                    ):
+                        add(p, False)
+        return out
+
+    def _parent_param_names(self, o: ObjectDef) -> set[str]:
+        """Spec keys that declare parent handle parameters (command params,
+        not create-info members): matched by exact or stripped name."""
+        names: set[str] = set()
+        for p, _ in self._parent_params(o):
+            names.add(p.name)
+            names.add(_member_var_name(p.name))
+        return names
+
     def _walk_spec(self, o: ObjectDef):
         """Yield (struct, member, value, base_name) for every spec value of
-        the object, descending into nested structs and arrays."""
+        the object, descending into nested structs and arrays. Parent handle
+        declarations are command parameters, not create-info members: they
+        are consumed by the create/destroy call generation, not the struct."""
         struct = self.registry.resolve_struct(o.binding.create_info_struct)
-        params = {k: v for k, v in o.params.items() if k != 'allocation'}
+        skip = self._parent_param_names(o) | {'allocation'}
+        params = {k: v for k, v in o.params.items() if k not in skip}
         yield from self._walk_struct(struct, params, o, o.instance_name)
 
     def _walk_struct(self, struct: Optional[Struct], fields: dict, o: ObjectDef, base: str):
@@ -848,43 +888,65 @@ class ClassGenerator:
 
     # ----------------------------------------------------------- handle needs
 
-    def _required_handle_types(self, obj: ObjectDef) -> list[str]:
-        """Handle types this object needs for creation and destruction."""
-        types: list[str] = []
-        cmd = self.registry.resolve_command(obj.binding.create_command)
-        if cmd is None:
-            raise GenerationError(f"unknown command {obj.binding.create_command}")
-        for p in cmd.params:
-            if p.name in obj.binding.parent_handles and p.type in self.registry.handles and not p.optional:
-                if p.type not in types:
-                    types.append(p.type)
-        # handles needed by explicit Class.object references in values are
-        # covered by the external class parameter
-        if obj.binding.destroy_command:
-            dcmd = self.registry.resolve_command(obj.binding.destroy_command)
-            if dcmd is not None:
-                for p in dcmd.params:
-                    if p.name in obj.binding.destroy_parent_handles and p.type in self.registry.handles:
-                        if p.type not in types:
-                            types.append(p.type)
-        return types
+    def _explicit_parent_param(self, o: ObjectDef, pname: str, ptype: str) -> Any:
+        """The spec-declared value for a create/destroy parent handle
+        parameter, looked up by exact or stripped parameter name. Same
+        sibling/cross-class/placeholder forms as create-info members."""
+        v = o.params.get(pname)
+        if v is None:
+            v = o.params.get(_member_var_name(pname))
+        if v is None:
+            return None
+        if isinstance(v, Ref):
+            if v.kind == "sibling" and v.object_name not in self.objects:
+                raise GenerationError(
+                    f"class '{self.cd.name}', object '{o.instance_name}': parent handle "
+                    f"'{pname}' references unknown sibling object '{v.object_name}'"
+                )
+            if v.kind == "external" and v.class_name not in self.class_lookup:
+                raise GenerationError(
+                    f"class '{self.cd.name}', object '{o.instance_name}': parent handle "
+                    f"'{pname}' references unknown class '{v.class_name}'"
+                )
+        if isinstance(v, str):
+            m = re.match(r"\{\{\s*(.*?)\s*\}\}", v)
+            if m:
+                v = Placeholder(name=m.group(1))
+        return v
 
-    def _sibling_for_handle(self, handle_type: str) -> Optional[ObjectDef]:
-        for o in self.cd.objects:
-            if o.binding.handle == handle_type:
-                return o
-        return None
-
-    def _external_for_handle(self, handle_type: str) -> Optional[tuple[str, str]]:
-        for other_name, other in self.class_lookup.items():
-            if other_name == self.cd.name:
+    def _require_explicit_parents(self, o: ObjectDef) -> None:
+        """Explicitness contract: every parent handle of a create or destroy
+        command (device, instance, physicalDevice, allocator, ...) must be
+        declared in the spec. No implicit inference from siblings."""
+        missing: list[str] = []
+        for p, is_create in self._parent_params(o):
+            if is_create and p.optional:
                 continue
-            for o in other.objects:
-                if o.binding.handle == handle_type:
-                    return _lower_first(other_name), o.instance_name
-        return None
+            if self._explicit_parent_param(o, p.name, p.type) is None:
+                if p.name not in missing:
+                    missing.append(p.name)
+        if missing:
+            raise GenerationError(
+                f"class '{self.cd.name}', object '{o.instance_name}' ({o.vulkan_name}): "
+                f"parent handle parameter(s) {missing} must be declared explicitly "
+                f"(a sibling object name, a 'Class.object' reference, or a "
+                f"'{{{{ Type name }}}}' placeholder); parent handles are never inferred"
+            )
 
-    # ------------------------------------------------------ constructor shape
+    def _declared_parent_placeholders(self, o: ObjectDef) -> list[tuple[str, str]]:
+        """(param_name, type) for parent handles declared as placeholders:
+        they become constructor parameters."""
+        out: list[tuple[str, str]] = []
+        cmd = self.registry.resolve_command(o.binding.create_command)
+        if cmd is None:
+            return out
+        for p in cmd.params:
+            if p.name in o.binding.parent_handles and p.type in self.registry.handles:
+                v = self._explicit_parent_param(o, p.name, p.type)
+                if isinstance(v, Placeholder):
+                    ptype = v.explicit_type or p.type
+                    out.append((v.name, ptype))
+        return out
 
     def ctor_params(self) -> list[tuple[str, str]]:
         """(type, name) of generated constructor parameters, in order."""
@@ -900,23 +962,13 @@ class ClassGenerator:
                         params.append((f"const {ref.class_name}&", pname))
                         seen.add(pname)
 
-        # handle parameters needed for creation/destruction, either as a
-        # reference to another generated class or as a raw handle parameter
+        # parent handles declared in the spec as placeholders are
+        # constructor parameters (sibling/cross-class refs need none)
         for o in self.ordered_objects():
-            for handle_type in self._required_handle_types(o):
-                if self._sibling_for_handle(handle_type) is not None:
-                    continue
-                ext = self._external_for_handle(handle_type)
-                if ext is not None:
-                    pname = ext[0]
-                    if pname not in seen:
-                        params.append((f"const {ext[0][0].upper() + ext[0][1:]}&", pname))
-                        seen.add(pname)
-                    continue
-                pname = _lower_first(handle_type)
-                if pname not in seen:
-                    params.append((handle_type, pname))
-                    seen.add(pname)
+            for hname, htype in self._declared_parent_placeholders(o):
+                if hname not in seen:
+                    params.append((htype, hname))
+                    seen.add(hname)
 
         # placeholders last
         for o in self.ordered_objects():
@@ -937,6 +989,8 @@ class ClassGenerator:
     # ------------------------------------------------------------ generation
 
     def generate(self) -> str:
+        for o in self.ordered_objects():
+            self._require_explicit_parents(o)
         ctor = self.ctor_params()
         param_list = ", ".join(f"{t} {n}" for t, n in ctor)
         inits = self._ctor_init_list()
@@ -957,9 +1011,7 @@ class ClassGenerator:
         # handles); moved-from objects reset their handles so the
         # destructor is a no-op (vector-compatible)
         member_list = [f"{o.instance_name}_" for o in self.ordered_objects()]
-        saved_list = [
-            f"{_lower_first(h)}_" for h in self._needed_saved_handles()
-        ]
+        saved_list = [m for m, _ in self._needed_saved_handles()]
         lines.append(f"    {self.cd.name}({self.cd.name}&& other) noexcept {{")
         for m in member_list + saved_list:
             lines.append(f"        {m} = other.{m};")
@@ -1012,33 +1064,58 @@ class ClassGenerator:
 
     def _ctor_init_list(self) -> list[str]:
         inits: list[str] = []
-        seen: set[str] = set()
-        for o in self.ordered_objects():
-            for handle_type in self._required_handle_types(o):
-                pname = _lower_first(handle_type)
-                if pname in seen or self._sibling_for_handle(handle_type) is not None:
-                    continue
-                ext = self._external_for_handle(handle_type)
-                expr = pname if ext is None else f"{ext[0]}.{ext[1]}()"
-                inits.append(f"{pname}_({expr})")
-                seen.add(pname)
+        for member, _ in self._init_saved_handles():
+            v = self._saved_handle_value(member)
+            if isinstance(v, Placeholder):
+                expr = v.name
+            elif isinstance(v, Ref):
+                expr = f"{_lower_first(v.class_name)}.{v.object_name}()"
+            else:
+                expr = member[:-1]
+            inits.append(f"{member}({expr})")
         return inits
 
     def _private_members(self) -> list[str]:
         out: list[str] = []
-        for handle_type in self._needed_saved_handles():
-            out.append(f"{handle_type} {_lower_first(handle_type)}_{{}};")
+        for member, ptype in self._needed_saved_handles():
+            out.append(f"{ptype} {member}{{}};")
         return out
 
-    def _needed_saved_handles(self) -> list[str]:
-        types: list[str] = []
+    def _needed_saved_handles(self) -> list[tuple[str, str]]:
+        """(member_name, type) for parent handles declared as placeholders
+        that the destroy command needs: they must outlive the constructor."""
+        out: list[tuple[str, str]] = []
         for o in self.ordered_objects():
-            for handle_type in self._required_handle_types(o):
-                if self._sibling_for_handle(handle_type) is not None:
+            for p, _ in self._parent_params(o):
+                if self._explicit_parent_param(o, p.name, p.type) is not None:
+                    member = f"{_member_var_name(p.name)}_"
+                    if member not in [m for m, _ in out]:
+                        out.append((member, p.type))
+        return out
+
+    def _init_saved_handles(self) -> list[tuple[str, str]]:
+        """Subset initialized in the constructor init list: placeholder and
+        cross-class values (available at construction entry). Sibling
+        values are assigned in the body after the sibling is created."""
+        out: list[tuple[str, str]] = []
+        for member, ptype in self._needed_saved_handles():
+            v = self._saved_handle_value(member)
+            if isinstance(v, Ref) and v.kind == "sibling":
+                continue
+            out.append((member, ptype))
+        return out
+
+    def _saved_handle_value(self, member: str):
+        """The declared value for a saved parent-handle member."""
+        pname = member[:-1]
+        for o in self.ordered_objects():
+            for p, _ in self._parent_params(o):
+                if _member_var_name(p.name) != pname:
                     continue
-                if handle_type not in types:
-                    types.append(handle_type)
-        return types
+                v = self._explicit_parent_param(o, p.name, p.type)
+                if v is not None:
+                    return v
+        return None
 
     # object creation ------------------------------------------------------
 
@@ -1050,26 +1127,24 @@ class ClassGenerator:
         if struct is None:
             raise GenerationError(f"unknown struct {o.binding.create_info_struct}")
 
-        required_handles = set(self._required_handle_types(o))
         locals_: list[str] = []
         info_var = f"{o.instance_name}CreateInfo"
         # VMA bindings carry a second CreateInfo (the allocation params)
-        # declared under the reserved 'allocation:' key
+        # declared under the reserved 'allocation:' key; parent handle
+        # declarations are command parameters, not create-info members
         allocation_fields = o.params.get("allocation")
         extra_struct_name = getattr(o.binding, "extra_info_struct", None)
-        if isinstance(allocation_fields, StructValue) and extra_struct_name:
+        has_extra = isinstance(allocation_fields, StructValue) and extra_struct_name
+        skip = self._parent_param_names(o) | {"allocation"}
+        create_params = {k: v for k, v in o.params.items() if k not in skip}
+        self._emit_struct(locals_, struct, create_params, info_var, o)
+        extra_var = None
+        if has_extra:
             extra_struct = self.registry.resolve_struct(extra_struct_name)
             if extra_struct is None:
                 raise GenerationError(f"unknown struct {extra_struct_name}")
-            # 'allocation' is not a member of the primary CreateInfo
-            primary_params = {k: v for k, v in o.params.items() if k != "allocation"}
-            self._emit_struct(locals_, struct, primary_params, info_var, o)
             extra_var = f"{o.instance_name}AllocationCreateInfo"
             self._emit_struct(locals_, extra_struct, allocation_fields.fields, extra_var, o)
-        else:
-            self._emit_struct(locals_, struct, o.params, info_var, o)
-
-        extra_var = f"{o.instance_name}AllocationCreateInfo" if isinstance(allocation_fields, StructValue) else None
         call_args: list[str] = []
         for p in cmd.params:
             if p.name == o.binding.create_info_param:
@@ -1087,12 +1162,21 @@ class ClassGenerator:
             elif o.binding.plural and p.len_value is not None:
                 call_args.append("1")
             elif p.type in self.registry.handles and not p.is_pointer:
-                if p.type not in self.registry.handles or (
-                    p.type not in required_handles and self._sibling_for_handle(p.type) is None and self._external_for_handle(p.type) is None
-                ):
+                v = self._explicit_parent_param(o, p.name, p.type)
+                if v is None:
                     call_args.append("VK_NULL_HANDLE")
+                elif isinstance(v, Ref) and v.kind == "sibling":
+                    # a sibling is created earlier in the same constructor;
+                    # use its member directly
+                    call_args.append(f"{v.object_name}_")
+                elif isinstance(v, Ref):
+                    # cross-class: call the accessor on the constructor's
+                    # class reference (valid during construction)
+                    call_args.append(f"{_lower_first(v.class_name)}.{v.object_name}()")
+                elif isinstance(v, Placeholder):
+                    call_args.append(v.name)
                 else:
-                    call_args.append(self._handle_arg(p))
+                    call_args.append(self._scalar(v))
             else:
                 call_args.append("nullptr")
 
@@ -1108,16 +1192,14 @@ class ClassGenerator:
             lines.append("}")
         else:
             lines.append(f"{call};")
+        # sibling-declared parents of LATER objects are saved here: this
+        # object's handle member is valid from this point on
+        for other in self.ordered_objects():
+            for p, _ in self._parent_params(other):
+                v = self._explicit_parent_param(other, p.name, p.type)
+                if isinstance(v, Ref) and v.kind == "sibling" and v.object_name == o.instance_name:
+                    lines.append(f"{_member_var_name(p.name)}_ = {o.instance_name}_;")
         return lines
-
-    def _handle_arg(self, p) -> str:
-        sibling = self._sibling_for_handle(p.type)
-        if sibling is not None:
-            return sibling.instance_name
-        ext = self._external_for_handle(p.type)
-        if ext is not None:
-            return f"{ext[0]}.{ext[1]}()"
-        return f"{_lower_first(p.type)}_"
 
     # struct emission ------------------------------------------------------
 
@@ -1275,14 +1357,16 @@ class ClassGenerator:
         escaped = s.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
 
-    def _ref_expr(self, ref: Ref, o: ObjectDef, member: Member) -> str:
+    def _ref_expr(self, ref: Ref, o: ObjectDef, member) -> str:
         if ref.kind == "sibling":
             if ref.object_name not in self.objects:
                 raise GenerationError(
                     f"class '{self.cd.name}', object '{o.instance_name}': reference to "
                     f"unknown sibling object '{ref.object_name}'"
                 )
-            return f"{ref.object_name}()"
+            # inside the class the sibling handle is the private member;
+            # the public accessor is only callable after construction
+            return f"{ref.object_name}_"
         other = self.class_lookup.get(ref.class_name)
         if other is None:
             raise GenerationError(
@@ -1364,11 +1448,9 @@ class ClassGenerator:
             elif p.name == "allocation" and p.type == "VmaAllocation":
                 args.append(f"{o.instance_name}Allocation_")
             elif p.type in self.registry.handles and not p.is_pointer:
-                sibling = self._sibling_for_handle(p.type)
-                if sibling is not None and sibling.instance_name != o.instance_name:
-                    args.append(sibling.instance_name)
-                else:
-                    args.append(f"{_lower_first(p.type)}_")
+                # declared parents are stored as members so both the
+                # constructor and the destructor can pass them
+                args.append(f"{_member_var_name(p.name)}_")
             elif p.is_const and p.is_pointer:
                 args.append("nullptr")
         lines = [f"if ({o.instance_name}_ != VK_NULL_HANDLE) {{"]

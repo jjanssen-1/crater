@@ -346,7 +346,7 @@ int main() {
     auto fragmentShader = readFile("examples/generated/quad.frag.spv");
     auto computeShader = readFile("examples/generated/quad.comp.spv");
 
-    QuadPipelines pipelines(descriptors, device,
+    QuadPipelines pipelines(device, descriptors,
                              vertexShader.size(), reinterpret_cast<const uint32_t*>(vertexShader.data()),
                              fragmentShader.size(), reinterpret_cast<const uint32_t*>(fragmentShader.data()),
                              computeShader.size(), reinterpret_cast<const uint32_t*>(computeShader.data()),
@@ -356,7 +356,7 @@ int main() {
     // destroy of the swapchain) before the surface is destroyed, which
     // must precede the device/instance teardown
     {
-    QuadSwapchain swapchain(surfaceCaps, device, surface,
+    QuadSwapchain swapchain(device, surfaceCaps, surface,
                             surfaceCaps.surfaceCapabilities.currentExtent.width != 0xFFFFFFFFu
                                 ? surfaceCaps.surfaceCapabilities.currentExtent
                                 : VkExtent2D{800, 600},

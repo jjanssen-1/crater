@@ -179,8 +179,8 @@ int main() {
     // surface below: a nested scope makes 'triangle' destruct first.
     {
     TrianglePipeline triangle(
-        capabilities,
         device,
+        capabilities,
         vertexShader.size(), reinterpret_cast<const uint32_t*>(vertexShader.data()),
         fragmentShader.size(), reinterpret_cast<const uint32_t*>(fragmentShader.data()),
         swapchainExtent);

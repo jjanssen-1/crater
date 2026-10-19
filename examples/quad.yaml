@@ -59,6 +59,7 @@ QuadDeviceCapabilities:
 QuadDevice:
   VkDevice:
     name: device
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
     enabledExtensionCount: QuadDeviceCapabilities.extensions.size()
     ppEnabledExtensionNames: QuadDeviceCapabilities.extensions.data()
     queueCreateInfos: {{ const VkDeviceQueueCreateInfo* queueCreateInfos }}
@@ -84,6 +85,7 @@ QuadSurfaceCapabilities:
 QuadUniform:
   VkBuffer:
     name: uniformBuffer
+    device: QuadDevice.device
     size: 192   # 3 x mat4 (model, view, proj), padded
     usage: VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
     sharingMode: VK_SHARING_MODE_EXCLUSIVE
@@ -92,12 +94,15 @@ QuadUniform:
 QuadGeometry:
   VkBuffer:
     - name: vertexBuffer
+      device: QuadDevice.device
       size: 64        # 4 vertices x (pos2 + uv2) floats
       usage: VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
     - name: indexBuffer
+      device: QuadDevice.device
       size: 12        # 6 uint16 indices
       usage: VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
     - name: stagingBuffer
+      device: QuadDevice.device
       size: 64        # one upload at a time; quad.cpp copies through it
       usage: VK_BUFFER_USAGE_TRANSFER_SRC_BIT
 
@@ -105,6 +110,7 @@ QuadGeometry:
 QuadTexture:
   VkImage:
     name: textureImage
+    device: QuadDevice.device
     imageType: VK_IMAGE_TYPE_2D
     format: VK_FORMAT_R8G8B8A8_UNORM
     extent: {{ VkExtent3D textureExtent }}
@@ -119,6 +125,7 @@ QuadTexture:
 QuadTextureView:
   VkImageView:
     name: textureView
+    device: QuadDevice.device
     image: {{ VkImage image }}
     viewType: VK_IMAGE_VIEW_TYPE_2D
     format: VK_FORMAT_R8G8B8A8_UNORM
@@ -130,6 +137,7 @@ QuadTextureView:
 QuadSampler:
   VkSampler:
     name: sampler
+    device: QuadDevice.device
     magFilter: VK_FILTER_NEAREST
     minFilter: VK_FILTER_NEAREST
     mipmapMode: VK_SAMPLER_MIPMAP_MODE_NEAREST
@@ -143,6 +151,7 @@ QuadSampler:
 QuadDescriptors:
   VkDescriptorSetLayout:
     name: setLayout
+    device: QuadDevice.device
     bindings:
       - binding: 0
         descriptorType: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
@@ -154,6 +163,7 @@ QuadDescriptors:
         stageFlags: VK_SHADER_STAGE_FRAGMENT_BIT
   VkDescriptorPool:
     name: descriptorPool
+    device: QuadDevice.device
     maxSets: 1
     poolSizes:
       - type: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
@@ -162,6 +172,7 @@ QuadDescriptors:
         descriptorCount: 1
   VkDescriptorSet:
     name: descriptorSet
+    device: QuadDevice.device
     descriptorPool: descriptorPool
     setLayouts: setLayout
 
@@ -169,6 +180,7 @@ QuadDescriptors:
 QuadRenderPass:
   VkRenderPass:
     name: renderPass
+    device: QuadDevice.device
     attachments:
       - format: {{ VkFormat format }}
         samples: VK_SAMPLE_COUNT_1_BIT
@@ -189,19 +201,24 @@ QuadRenderPass:
 QuadPipelines:
   VkShaderModule:
     - name: vertexModule
+      device: QuadDevice.device
       codeSize: {{ size_t vertexCodeSize }}
       pCode: {{ const uint32_t* vertexCode }}
     - name: fragmentModule
+      device: QuadDevice.device
       codeSize: {{ size_t fragmentCodeSize }}
       pCode: {{ const uint32_t* fragmentCode }}
     - name: computeModule
+      device: QuadDevice.device
       codeSize: {{ size_t computeCodeSize }}
       pCode: {{ const uint32_t* computeCode }}
   VkPipelineLayout:
     name: pipelineLayout
+    device: QuadDevice.device
     setLayouts: QuadDescriptors.setLayout
   VkGraphicsPipeline:
     name: graphicsPipeline
+    device: QuadDevice.device
     layout: pipelineLayout
     renderPass: {{ VkRenderPass renderPass }}
     stages:
@@ -244,6 +261,7 @@ QuadPipelines:
         - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
   VkComputePipeline:
     name: computePipeline
+    device: QuadDevice.device
     layout: pipelineLayout
     stage:
       stage: VK_SHADER_STAGE_COMPUTE_BIT
@@ -255,6 +273,7 @@ QuadPipelines:
 QuadSwapchain:
   VkSwapchainKHR:
     name: swapchain
+    device: QuadDevice.device
     surface: {{ VkSurfaceKHR surface }}
     minImageCount: QuadSurfaceCapabilities.surfaceCapabilities.minImageCount
     imageExtent: {{ VkExtent2D swapchainExtent }}
@@ -272,8 +291,10 @@ QuadSwapchain:
 QuadSync:
   VkSemaphore:
     name: imageAvailable
+    device: QuadDevice.device
   VkFence:
     name: frameInFlight
+    device: QuadDevice.device
     flags: VK_FENCE_CREATE_SIGNALED_BIT
 
 # Per-swapchain-image view and framebuffer (instantiated per image by
@@ -281,6 +302,7 @@ QuadSync:
 SwapchainImageView:
   VkImageView:
     name: view
+    device: QuadDevice.device
     image: {{ VkImage image }}
     viewType: VK_IMAGE_VIEW_TYPE_2D
     format: {{ VkFormat format }}
@@ -292,6 +314,7 @@ SwapchainImageView:
 SwapchainFramebuffer:
   VkFramebuffer:
     name: framebuffer
+    device: QuadDevice.device
     renderPass: {{ VkRenderPass renderPass }}
     attachmentCount: 1
     attachments: {{ const VkImageView* attachment }}
@@ -302,10 +325,12 @@ SwapchainFramebuffer:
 FrameCommands:
   VkCommandPool:
     name: commandPool
+    device: QuadDevice.device
     flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
     queueFamilyIndex: {{ uint32_t queueFamilyIndex }}
   VkCommandBuffer:
     name: commandBuffer
+    device: QuadDevice.device
     commandPool: commandPool
     level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
     commandBufferCount: 1

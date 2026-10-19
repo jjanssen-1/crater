@@ -42,6 +42,7 @@ DeviceCapabilities:
 VulkanDevice:
   VkDevice:
     name: device
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
     queueCreateInfos:
       - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
         queueCount: 1
@@ -73,15 +74,19 @@ SurfaceCapabilities:
 TrianglePipeline:
   VkShaderModule:
     - name: vertexModule
+      device: VulkanDevice.device
       codeSize: {{ size_t vertexShaderSize }}
       pCode: {{ const uint32_t* vertexShaderCode }}
     - name: fragmentModule
+      device: VulkanDevice.device
       codeSize: {{ size_t fragmentShaderSize }}
       pCode: {{ const uint32_t* fragmentShaderCode }}
   VkPipelineLayout:
     name: layout
+    device: VulkanDevice.device
   VkRenderPass:
     name: renderPass
+    device: VulkanDevice.device
     attachments:
       - format: SurfaceCapabilities.surfaceFormat.format
         samples: VK_SAMPLE_COUNT_1_BIT
@@ -98,6 +103,7 @@ TrianglePipeline:
             layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
   VkGraphicsPipeline:
     name: pipeline
+    device: VulkanDevice.device
     layout: layout
     renderPass: renderPass
     stages:
@@ -129,6 +135,7 @@ TrianglePipeline:
         - colorWriteMask: VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
   VkSwapchainKHR:
     name: swapchain
+    device: VulkanDevice.device
     surface: SurfaceCapabilities.surface
     minImageCount: SurfaceCapabilities.surfaceCapabilities.minImageCount
     imageExtent: {{ VkExtent2D swapchainExtent }}
@@ -143,8 +150,10 @@ TrianglePipeline:
     clipped: true
   VkSemaphore:
     name: imageAvailable
+    device: VulkanDevice.device
   VkFence:
     name: inFlight
+    device: VulkanDevice.device
     flags: VK_FENCE_CREATE_SIGNALED_BIT
 
 # One image view per swapchain image: an ordinary object class; the
@@ -154,6 +163,7 @@ TrianglePipeline:
 SwapchainImageView:
   VkImageView:
     name: view
+    device: VulkanDevice.device
     image: {{ VkImage image }}
     viewType: VK_IMAGE_VIEW_TYPE_2D
     format: {{ VkFormat format }}
@@ -167,6 +177,7 @@ SwapchainImageView:
 SwapchainFramebuffer:
   VkFramebuffer:
     name: framebuffer
+    device: VulkanDevice.device
     renderPass: {{ VkRenderPass renderPass }}
     attachmentCount: 1
     attachments: {{ const VkImageView* attachment }}
@@ -180,6 +191,7 @@ SwapchainFramebuffer:
 RenderFinishedSemaphore:
   VkSemaphore:
     name: semaphore
+    device: VulkanDevice.device
 
 # Command pool + one primary command buffer per frame; allocation is
 # vkAllocateCommandBuffers (inferred from the registry like any
@@ -187,10 +199,12 @@ RenderFinishedSemaphore:
 FrameCommands:
   VkCommandPool:
     name: commandPool
+    device: VulkanDevice.device
     flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
     queueFamilyIndex: {{ uint32_t queueFamilyIndex }}
   VkCommandBuffer:
     name: commandBuffer
+    device: VulkanDevice.device
     commandPool: commandPool
     level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
     commandBufferCount: 1
