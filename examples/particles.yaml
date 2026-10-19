@@ -60,6 +60,7 @@ ParticlesCapabilities:
 ParticlesDevice:
   VkDevice:
     name: device
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
     enabledExtensionCount: ParticlesCapabilities.extensions.size()
     ppEnabledExtensionNames: ParticlesCapabilities.extensions.data()
     queueCreateInfos: {{ const VkDeviceQueueCreateInfo* queueCreateInfos }}
@@ -83,6 +84,7 @@ ParticlesAllocator:
 ParticleBuffer:
   VmaBuffer:
     name: particleBuffer
+    allocator: ParticlesAllocator.allocator
     size: {{ VkDeviceSize bufferSize }}
     usage: VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
     sharingMode: VK_SHARING_MODE_EXCLUSIVE
@@ -95,6 +97,7 @@ ParticleBuffer:
 FrameUniform:
   VmaBuffer:
     name: uniformBuffer
+    allocator: ParticlesAllocator.allocator
     size: 16    # float deltaTime
     usage: VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
     sharingMode: VK_SHARING_MODE_EXCLUSIVE
@@ -106,6 +109,7 @@ FrameUniform:
 ParticleQueries:
   VkQueryPool:
     name: timestampPool
+    device: ParticlesDevice.device
     queryType: VK_QUERY_TYPE_TIMESTAMP
     queryCount: 2
 
@@ -115,13 +119,16 @@ ParticleQueries:
 ParticleCompute:
   VkShaderModule:
     name: computeModule
+    device: ParticlesDevice.device
     codeSize: {{ size_t computeCodeSize }}
     pCode: {{ const uint32_t* computeCode }}
   VkPipelineLayout:
     name: computeLayout
+    device: ParticlesDevice.device
     setLayouts: ParticlesDescriptors.setLayout
   VkComputePipeline:
     name: computePipeline
+    device: ParticlesDevice.device
     layout: computeLayout
     stage:
       stage: VK_SHADER_STAGE_COMPUTE_BIT
@@ -132,6 +139,7 @@ ParticleCompute:
 ParticlesDescriptors:
   VkDescriptorSetLayout:
     name: setLayout
+    device: ParticlesDevice.device
     bindings:
       - binding: 0
         descriptorType: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
@@ -143,6 +151,7 @@ ParticlesDescriptors:
         stageFlags: VK_SHADER_STAGE_COMPUTE_BIT
   VkDescriptorPool:
     name: descriptorPool
+    device: ParticlesDevice.device
     maxSets: 1
     poolSizes:
       - type: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
@@ -151,6 +160,7 @@ ParticlesDescriptors:
         descriptorCount: 1
   VkDescriptorSet:
     name: descriptorSet
+    device: ParticlesDevice.device
     descriptorPool: descriptorPool
     setLayouts: setLayout
 
@@ -158,6 +168,7 @@ ParticlesDescriptors:
 ParticlesRenderPass:
   VkRenderPass:
     name: renderPass
+    device: ParticlesDevice.device
     attachments:
       - format: {{ VkFormat format }}
         samples: VK_SAMPLE_COUNT_1_BIT
@@ -176,16 +187,20 @@ ParticlesRenderPass:
 ParticlesPipelines:
   VkShaderModule:
     - name: vertexModule
+      device: ParticlesDevice.device
       codeSize: {{ size_t vertexCodeSize }}
       pCode: {{ const uint32_t* vertexCode }}
     - name: fragmentModule
+      device: ParticlesDevice.device
       codeSize: {{ size_t fragmentCodeSize }}
       pCode: {{ const uint32_t* fragmentCode }}
   VkPipelineLayout:
     name: graphicsLayout
+    device: ParticlesDevice.device
     setLayouts: ParticlesDescriptors.setLayout
   VkGraphicsPipeline:
     name: graphicsPipeline
+    device: ParticlesDevice.device
     layout: graphicsLayout
     renderPass: ParticlesRenderPass.renderPass
     stages:
@@ -232,6 +247,7 @@ ParticlesSurface:
 ParticlesSwapchain:
   VkSwapchainKHR:
     name: swapchain
+    device: ParticlesDevice.device
     surface: {{ VkSurfaceKHR surface }}
     minImageCount: ParticlesSurface.surfaceCapabilities.minImageCount
     imageExtent: {{ VkExtent2D swapchainExtent }}
@@ -249,6 +265,7 @@ ParticlesSwapchain:
 SwapchainImageView:
   VkImageView:
     name: view
+    device: ParticlesDevice.device
     image: {{ VkImage image }}
     viewType: VK_IMAGE_VIEW_TYPE_2D
     format: {{ VkFormat format }}
@@ -260,6 +277,7 @@ SwapchainImageView:
 SwapchainFramebuffer:
   VkFramebuffer:
     name: framebuffer
+    device: ParticlesDevice.device
     renderPass: {{ VkRenderPass renderPass }}
     attachmentCount: 1
     attachments: {{ const VkImageView* attachment }}
@@ -273,20 +291,24 @@ SwapchainFramebuffer:
 RenderFinishedSemaphore:
   VkSemaphore:
     name: semaphore
+    device: ParticlesDevice.device
 
 # Graphics-frame commands; the compute pass uses its own command buffer
 # per frame (declared here too so both live in one class).
 FrameCommands:
   VkCommandPool:
     name: commandPool
+    device: ParticlesDevice.device
     flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
     queueFamilyIndex: {{ uint32_t queueFamilyIndex }}
   VkCommandBuffer:
     - name: renderCommandBuffer
+      device: ParticlesDevice.device
       commandPool: commandPool
       level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
       commandBufferCount: 1
     - name: computeCommandBuffer
+      device: ParticlesDevice.device
       commandPool: commandPool
       level: VK_COMMAND_BUFFER_LEVEL_PRIMARY
       commandBufferCount: 1
@@ -294,9 +316,12 @@ FrameCommands:
 ParticlesSync:
   VkSemaphore:
     - name: imageAvailable
+      device: ParticlesDevice.device
     - name: computeFinished
+      device: ParticlesDevice.device
   VkFence:
     name: frameInFlight
+    device: ParticlesDevice.device
     flags: VK_FENCE_CREATE_SIGNALED_BIT
 
 functions:

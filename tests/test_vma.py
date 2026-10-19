@@ -18,6 +18,7 @@ Allocator:
 VertexStaging:
   VmaBuffer:
     name: stagingBuffer
+    allocator: Allocator.allocator
     size: 65536
     usage: VK_BUFFER_USAGE_TRANSFER_SRC_BIT
     sharingMode: VK_SHARING_MODE_EXCLUSIVE
@@ -54,7 +55,7 @@ def test_vma_generation(registry: Registry):
     assert "VkBuffer stagingBuffer() const { return stagingBuffer_; }" in out
     assert "VmaAllocation stagingBufferAllocation() const { return stagingBufferAllocation_; }" in out
     # destruction passes the allocation
-    assert "vmaDestroyBuffer(vmaAllocator_, stagingBuffer_, stagingBufferAllocation_);" in out
+    assert "vmaDestroyBuffer(allocator_, stagingBuffer_, stagingBufferAllocation_);" in out
 
 
 def test_vma_requires_use_vma():
@@ -89,6 +90,7 @@ A:
 B:
   VmaBuffer:
     name: b
+    allocator: A.allocator
     size: 64
     allocation:
       notAMember: 1

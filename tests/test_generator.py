@@ -33,9 +33,11 @@ def test_sibling_ref_orders_creation(registry: Registry):
 P:
   VkGraphicsPipeline:
     name: pipeline
+    device: "{{ VkDevice device }}"
     layout: layout
   VkPipelineLayout:
     name: layout
+    device: "{{ VkDevice device }}"
 """,
         registry,
     )
@@ -51,8 +53,10 @@ def test_external_ref_becomes_ctor_param(registry: Registry):
 A:
   VkRenderPass:
     name: mainRenderPass
+    device: "{{ VkDevice device }}"
 B:
   VkGraphicsPipeline:
+    device: "{{ VkDevice device }}"
     renderPass: A.mainRenderPass
 """,
         registry,
@@ -66,11 +70,12 @@ def test_placeholder_infers_type_from_registry(registry: Registry):
         """
 S:
   VkShaderModule:
+    device: "{{ VkDevice device }}"
     pCode: {{ code }}
 """,
         registry,
     )
-    assert "explicit S(VkDevice vkDevice, const uint32_t* code)" in out
+    assert "explicit S(VkDevice device, const uint32_t* code)" in out
     assert ".pCode = code;" in out
 
 
@@ -79,6 +84,7 @@ def test_stage_array_generates_count(registry: Registry):
         """
 P:
   VkGraphicsPipeline:
+    device: "{{ VkDevice device }}"
     stages:
       - stage: VK_SHADER_STAGE_VERTEX_BIT
         module: {{ vertexModule }}
@@ -94,7 +100,8 @@ def test_plural_command_count_is_one(registry: Registry):
     out = generate_from_spec(
         """
 P:
-  VkGraphicsPipeline: {}
+  VkGraphicsPipeline:
+    device: "{{ VkDevice device }}"
 """,
         registry,
     )
@@ -106,7 +113,8 @@ def test_pipeline_cache_defaults_to_null(registry: Registry):
     out = generate_from_spec(
         """
 P:
-  VkGraphicsPipeline: {}
+  VkGraphicsPipeline:
+    device: "{{ VkDevice device }}"
 """,
         registry,
     )
@@ -134,9 +142,11 @@ def test_destruction_is_reverse_order(registry: Registry):
 P:
   VkGraphicsPipeline:
     name: pipeline
+    device: "{{ VkDevice device }}"
     layout: layout
   VkPipelineLayout:
     name: layout
+    device: "{{ VkDevice device }}"
 """,
         registry,
     )
@@ -151,7 +161,9 @@ def test_circular_class_refs_rejected(registry: Registry):
 A:
   VkRenderPass:
     name: r
+    device: "{{ VkDevice device }}"
   VkGraphicsPipeline:
+    device: "{{ VkDevice device }}"
     renderPass: B.r
 B:
   VkRenderPass:
@@ -175,14 +187,17 @@ VulkanApp:
 VulkanDevice:
   VkDevice:
     name: device
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}
     enabledExtensionNames:
       - VK_KHR_swapchain
 
 TrianglePipeline:
   VkPipelineLayout:
     name: layout
+    device: VulkanDevice.device
   VkGraphicsPipeline:
     name: pipeline
+    device: VulkanDevice.device
     layout: layout
     renderPass: TriangleFrame.renderPass
     stages:
@@ -196,14 +211,20 @@ TrianglePipeline:
 TriangleFrame:
   VkRenderPass:
     name: renderPass
+    device: VulkanDevice.device
   VkSwapchainKHR:
     name: swapchain
+    device: VulkanDevice.device
+    surface: {{ VkSurfaceKHR surface }}
     imageExtent: {{ VkExtent2D extent }}
   VkSemaphore:
     - name: imageAvailable
+      device: VulkanDevice.device
     - name: renderFinished
+      device: VulkanDevice.device
   VkFence:
     name: inFlight
+    device: VulkanDevice.device
 """
 
 
@@ -232,6 +253,7 @@ def test_nested_struct_in_array_item(registry: Registry):
         """
 P:
   VkGraphicsPipeline:
+    device: "{{ VkDevice device }}"
     viewportState:
       scissors:
         - offset:
@@ -261,6 +283,7 @@ def test_vulkan_error_exception_type(registry: Registry, tmp_path):
 T:
   VkSemaphore:
     name: sem
+    device: "{{ VkDevice device }}"
 """,
         registry,
     )
@@ -279,6 +302,7 @@ def test_vulkan_error_catchable(registry: Registry, tmp_path):
 T:
   VkSemaphore:
     name: sem
+    device: "{{ VkDevice device }}"
 """,
         registry,
     )
@@ -322,13 +346,30 @@ def test_device_with_children_in_one_class_compiles(registry: Registry, tmp_path
 App:
   VkDevice:
     name: logicalDevice
+    physicalDevice: "{{ VkPhysicalDevice physicalDevice }}"
   VkSwapchainKHR:
     name: swapchain
+    device: logicalDevice
     surface: "{{ VkSurfaceKHR surface }}"
 """,
         registry,
     )
     assert "vkCreateSwapchainKHR(logicalDevice_, &swapchainCreateInfo" in out
-    assert "vkDestroySwapchainKHR(logicalDevice_, swapchain_" in out
-    assert "logicalDevice()" not in out.split("~App()")[0].split("vkCreateDevice")[1]
+    # the destroy call passes the parent stored from the declared sibling
+    assert "vkDestroySwapchainKHR(device_, swapchain_" in out
+    assert "device_(logicalDevice_)" in out
+    # parent handles are never inferred: the spec must declare them
+    with pytest.raises(GenerationError):
+        generate_from_spec(
+            """
+App:
+  VkDevice:
+    name: logicalDevice
+    physicalDevice: "{{ VkPhysicalDevice physicalDevice }}"
+  VkSwapchainKHR:
+    name: swapchain
+    surface: "{{ VkSurfaceKHR surface }}"
+""",
+            registry,
+        )
     assert compile_generated(out, tmp_path)

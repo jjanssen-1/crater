@@ -80,6 +80,35 @@ OurPipeline(const VulkanInstance& vulkanInstance, VkDevice vkDevice,
   (`nullptr`), optional handles like `pipelineCache`
   (`VK_NULL_HANDLE`) — is derived from `vk.xml`. You never specify it.
 
+### Parent handles are explicit
+
+Create and destroy commands take parent handles as separate command
+parameters (`vkCreateSwapchainKHR(device, ...)`). These are **never
+inferred** — not from siblings, not from other classes. Declare them
+under the object, by the command's parameter name:
+
+```yaml
+VulkanDevice:
+  VkDevice:
+    name: device
+    physicalDevice: {{ VkPhysicalDevice physicalDevice }}   # vkCreateDevice's parent
+
+TriangleFrame:
+  VkSwapchainKHR:
+    name: swapchain
+    device: VulkanDevice.device        # cross-class: adds a constructor parameter
+    surface: {{ VkSurfaceKHR surface }} # or a placeholder: adds a raw handle parameter
+  VkSemaphore:
+    name: imageAvailable
+    device: VulkanDevice.device
+```
+
+A missing declaration is a generation error naming the exact parameter.
+The same forms work as for create-info values: a sibling object name
+(`device: logicalDevice`), a `Class.object` reference, or a
+`{{ Type name }}` placeholder. Handles the destructor needs are stored
+as members automatically.
+
 ### Capabilities (queries and selection)
 
 Some values can only be known at runtime - surface formats, present
@@ -228,8 +257,8 @@ in your code, but the boilerplate around it is declared once.
 
 Objects that "stand together" are grouped in one class; the class
 creates them in dependency order and destroys them in reverse order.
-Handles that a destructor needs (e.g. the `VkDevice` of a pipeline) are
-stored automatically.
+Parent handles passed to destroy commands are stored as members
+automatically (declared explicitly at creation; see above).
 
 ## Registry-driven, no special cases
 

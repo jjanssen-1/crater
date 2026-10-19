@@ -98,6 +98,8 @@ def test_consumed_capability_values(registry: Registry):
 Swapchain:
   VkSwapchainKHR:
     name: swapchain
+    device: "{{ VkDevice device }}"
+    surface: SurfaceCapabilities.surface
     imageExtent: SurfaceCapabilities.surfaceCapabilities.currentExtent
     imageFormat: SurfaceCapabilities.surfaceFormat.format
     presentMode: SurfaceCapabilities.presentMode
@@ -117,6 +119,7 @@ def test_declared_inputs(registry: Registry):
 Dev:
   VkDevice:
     name: device
+    physicalDevice: "{{ VkPhysicalDevice physicalDevice }}"
 
 Caps:
   physicalDevice: {{ VkPhysicalDevice physicalDevice }}
@@ -210,6 +213,7 @@ def test_device_creation_uses_selection(registry: Registry, tmp_path):
 VulkanDevice:
   VkDevice:
     name: device
+    physicalDevice: "{{ VkPhysicalDevice physicalDevice }}"
     queueCreateInfos:
       - queueFamilyIndex: DeviceCapabilities.graphicsQueueFamilyIndex
         queueCount: 1
@@ -334,6 +338,7 @@ Caps:
 Dev:
   VkDevice:
     name: device
+    physicalDevice: "{{ VkPhysicalDevice physicalDevice }}"
     enabledExtensionCount: Caps.extensions.size()
     ppEnabledExtensionNames: Caps.extensions.data()
     enabledFeatures:
@@ -360,6 +365,7 @@ SurfaceCapabilities:
 S:
   VkSwapchainKHR:
     name: swapchain
+    device: "{{ VkDevice device }}"
     surface: SurfaceCapabilities.surface
 """,
         registry,
@@ -376,6 +382,7 @@ def test_literal_count_members_emitted(registry: Registry, tmp_path):
         """
 P:
   VkGraphicsPipeline:
+    device: "{{ VkDevice device }}"
     viewportState:
       viewportCount: 1
       scissorCount: 1

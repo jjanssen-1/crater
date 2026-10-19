@@ -136,10 +136,10 @@ int main() {
     auto fragmentShader = readFile("examples/generated/particles.frag.spv");
 
     ParticleCompute compute(
-        descriptors, device,
+        device, descriptors,
         computeShader.size(), reinterpret_cast<const uint32_t*>(computeShader.data()));
     ParticlesPipelines graphics(
-        descriptors, renderPass, device,
+        device, descriptors, renderPass,
         vertexShader.size(), reinterpret_cast<const uint32_t*>(vertexShader.data()),
         fragmentShader.size(), reinterpret_cast<const uint32_t*>(fragmentShader.data()));
 
@@ -147,7 +147,7 @@ int main() {
     // destroy of the swapchain and per-image objects) before the surface
     // is destroyed, which must precede the device/instance teardown
     {
-    ParticlesSwapchain swapchain(surfaceCaps, device, surface, swapExtent);
+    ParticlesSwapchain swapchain(device, surfaceCaps, surface, swapExtent);
 
     // per-image resources
     std::vector<SwapchainImageView> views;

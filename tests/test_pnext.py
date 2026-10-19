@@ -12,6 +12,7 @@ def test_pnext_chain_on_device(registry: Registry, tmp_path):
 D:
   VkDevice:
     name: device
+    physicalDevice: "{{ VkPhysicalDevice physicalDevice }}"
     pNext:
       - VkPhysicalDeviceFeatures2:
           features:
